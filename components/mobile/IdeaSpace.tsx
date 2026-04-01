@@ -828,8 +828,11 @@ export function MobileIdeaSpace({ onRestart, topic }: MobileIdeaSpaceProps) {
         ) : null}
       </div>
 
-      {/* Minimap */}
-      <div className="pointer-events-none absolute inset-0 z-20">
+      {/* Minimap — scaled down for mobile */}
+      <div
+        className="pointer-events-none absolute inset-0 z-20"
+        style={{ transformOrigin: "top left", transform: "scale(0.62)", width: "161%", height: "161%" }}
+      >
         <MiniMapPanel
           edges={snapshotEdges}
           nodes={snapshotNodes}

@@ -648,9 +648,9 @@ export function MobileIdeaSpace({ onRestart, topic }: MobileIdeaSpaceProps) {
       renderer.render(scene, camera);
     };
 
-    canvas.addEventListener("touchstart", handleTouchStart, { passive: true });
-    canvas.addEventListener("touchmove", handleTouchMove, { passive: false });
-    canvas.addEventListener("touchend", handleTouchEnd);
+    container.addEventListener("touchstart", handleTouchStart, { passive: true });
+    container.addEventListener("touchmove", handleTouchMove, { passive: false });
+    container.addEventListener("touchend", handleTouchEnd);
     labels.addEventListener("pointerdown", handleLabelPointerDown);
 
     animate();
@@ -659,9 +659,9 @@ export function MobileIdeaSpace({ onRestart, topic }: MobileIdeaSpaceProps) {
       graphApiRef.current = null;
       resizeObserver.disconnect();
       window.cancelAnimationFrame(animationFrame);
-      canvas.removeEventListener("touchstart", handleTouchStart);
-      canvas.removeEventListener("touchmove", handleTouchMove);
-      canvas.removeEventListener("touchend", handleTouchEnd);
+      container.removeEventListener("touchstart", handleTouchStart);
+      container.removeEventListener("touchmove", handleTouchMove);
+      container.removeEventListener("touchend", handleTouchEnd);
       labels.removeEventListener("pointerdown", handleLabelPointerDown);
       labels.innerHTML = "";
       edgeRuntimes.forEach((r) => { r.line.geometry.dispose(); r.mat.dispose(); });

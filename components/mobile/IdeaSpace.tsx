@@ -3,6 +3,7 @@
 import { useEffect, useMemo, useRef, useState } from "react";
 import * as THREE from "three";
 import { SideDrawer } from "@/components/mobile/SideDrawer";
+import { MiniMapPanel } from "@/components/desktop/MiniMapPanel";
 import { createGraphSeed, createSpawnedNode, getPaletteForLevel } from "@/lib/graphData";
 import type { GraphEdge, GraphNode } from "@/types/davinci";
 
@@ -101,6 +102,15 @@ export function MobileIdeaSpace({ onRestart, topic }: MobileIdeaSpaceProps) {
   const [snapshotNodes, setSnapshotNodes] = useState<GraphNode[]>(seed.nodes);
   const [snapshotEdges, setSnapshotEdges] = useState<GraphEdge[]>(seed.edges);
   const [workspaceMemo, setWorkspaceMemo] = useState("");
+  const [miniMapView, setMiniMapView] = useState({
+    focusX: seed.nodes[seed.rootId]?.x ?? 0,
+    focusY: seed.nodes[seed.rootId]?.y ?? 0,
+    focusZ: seed.nodes[seed.rootId]?.z ?? 0,
+    rotX: 0.12,
+    rotY: 0.22,
+  });
+  const [joystickPos, setJoystickPos] = useState({ x: 0, y: 0 });
+  const joystickVecRef = useRef({ x: 0, y: 0 });
 
   useEffect(() => {
     const container = containerRef.current;
@@ -147,6 +157,8 @@ export function MobileIdeaSpace({ onRestart, topic }: MobileIdeaSpaceProps) {
     );
     const focusTarget = focusCurrent.clone();
     const rotatedFocus = new THREE.Vector3();
+    const userPanCurrent = new THREE.Vector3();
+    const userPanTarget = new THREE.Vector3();
 
     let rotX = 0.12;
     let rotY = 0.22;
@@ -156,6 +168,7 @@ export function MobileIdeaSpace({ onRestart, topic }: MobileIdeaSpaceProps) {
     let targetZoom = 30;
     let tick = 0;
     let animationFrame = 0;
+    let lastMiniMapSync = 0;
 
     // Touch state
     let lastTouchX = 0;
@@ -572,19 +585,35 @@ export function MobileIdeaSpace({ onRestart, topic }: MobileIdeaSpaceProps) {
       animationFrame = window.requestAnimationFrame(animate);
       tick += 1;
 
+      // Joystick pan
+      const jv = joystickVecRef.current;
+      if (jv.x !== 0 || jv.y !== 0) {
+        const panScale = zoom * 0.0015;
+        userPanTarget.x -= jv.x * panScale;
+        userPanTarget.y -= jv.y * panScale;
+      }
+
       rotX += (targetRotX - rotX) * 0.055;
       rotY += (targetRotY - rotY) * 0.055;
       zoom += (targetZoom - zoom) * 0.07;
       focusCurrent.lerp(focusTarget, 0.11);
+      userPanCurrent.lerp(userPanTarget, 0.16);
 
       graphGroup.rotation.x = rotX;
       graphGroup.rotation.y = rotY;
       rotatedFocus.copy(focusCurrent).applyEuler(graphGroup.rotation);
-      graphGroup.position.x += (-rotatedFocus.x - graphGroup.position.x) * 0.12;
-      graphGroup.position.y += (-rotatedFocus.y - graphGroup.position.y) * 0.12;
+      graphGroup.position.x += (-rotatedFocus.x + userPanCurrent.x - graphGroup.position.x) * 0.12;
+      graphGroup.position.y += (-rotatedFocus.y + userPanCurrent.y - graphGroup.position.y) * 0.12;
       graphGroup.position.z += (-rotatedFocus.z - graphGroup.position.z) * 0.12;
       camera.position.z = zoom;
       camera.lookAt(0, 0, 0);
+
+      // Minimap sync
+      const now2 = performance.now();
+      if (now2 - lastMiniMapSync > 80) {
+        lastMiniMapSync = now2;
+        setMiniMapView({ focusX: focusCurrent.x, focusY: focusCurrent.y, focusZ: focusCurrent.z, rotX, rotY });
+      }
 
       nodes.forEach((node, index) => {
         const runtime = nodeRuntimes.get(node.id);
@@ -660,6 +689,37 @@ export function MobileIdeaSpace({ onRestart, topic }: MobileIdeaSpaceProps) {
   const category = selectedNode?.category ?? "idea";
   const canDelete = Boolean(selectedNode && selectedNode.id !== seed.rootId);
 
+  const JOYSTICK_R = 40; // base radius px
+
+  const handleJoystickStart = (e: React.TouchEvent) => {
+    e.stopPropagation();
+  };
+
+  const handleJoystickMove = (e: React.TouchEvent) => {
+    e.stopPropagation();
+    e.preventDefault();
+    const touch = e.touches[0];
+    if (!touch) return;
+    const rect = (e.currentTarget as HTMLElement).getBoundingClientRect();
+    const cx = rect.left + JOYSTICK_R;
+    const cy = rect.top + JOYSTICK_R;
+    let dx = touch.clientX - cx;
+    let dy = touch.clientY - cy;
+    const dist = Math.hypot(dx, dy);
+    if (dist > JOYSTICK_R) {
+      dx = (dx / dist) * JOYSTICK_R;
+      dy = (dy / dist) * JOYSTICK_R;
+    }
+    joystickVecRef.current = { x: dx / JOYSTICK_R, y: -dy / JOYSTICK_R };
+    setJoystickPos({ x: dx, y: dy });
+  };
+
+  const handleJoystickEnd = (e: React.TouchEvent) => {
+    e.stopPropagation();
+    joystickVecRef.current = { x: 0, y: 0 };
+    setJoystickPos({ x: 0, y: 0 });
+  };
+
   return (
     <div ref={containerRef} className="absolute inset-0 bg-[#faf8f3]">
       <canvas ref={canvasRef} className="absolute inset-0 h-full w-full" />
@@ -710,8 +770,13 @@ export function MobileIdeaSpace({ onRestart, topic }: MobileIdeaSpaceProps) {
           panelOpen && selectedNode ? "translate-y-0" : "translate-y-full"
         }`}
       >
-        {/* Handle */}
-        <div className="mx-auto mb-4 h-1 w-10 rounded-full bg-[#e8d5b8]" />
+        {/* Handle — tap to close */}
+        <button
+          type="button"
+          onClick={() => setPanelOpen(false)}
+          className="mx-auto mb-4 block h-1 w-10 rounded-full bg-[#e8d5b8]"
+          aria-label="패널 닫기"
+        />
 
         {selectedNode ? (
           <>
@@ -761,6 +826,39 @@ export function MobileIdeaSpace({ onRestart, topic }: MobileIdeaSpaceProps) {
             />
           </>
         ) : null}
+      </div>
+
+      {/* Minimap */}
+      <div className="pointer-events-none absolute inset-0 z-20">
+        <MiniMapPanel
+          edges={snapshotEdges}
+          nodes={snapshotNodes}
+          onSelectNode={(id) => { graphApiRef.current?.selectNode(id); setPanelOpen(true); }}
+          rootId={seed.rootId}
+          selectedNodeId={selectedNodeId}
+          viewState={miniMapView}
+        />
+      </div>
+
+      {/* Virtual Joystick */}
+      <div
+        data-graph-control
+        className="fixed z-20 touch-none"
+        style={{ bottom: panelOpen ? 220 : 40, left: 20, width: JOYSTICK_R * 2, height: JOYSTICK_R * 2 }}
+        onTouchStart={handleJoystickStart}
+        onTouchMove={handleJoystickMove}
+        onTouchEnd={handleJoystickEnd}
+      >
+        {/* Base */}
+        <div className="absolute inset-0 rounded-full border border-[#c4a882] bg-[rgba(250,248,243,0.55)]" />
+        {/* Thumb */}
+        <div
+          className="absolute h-7 w-7 rounded-full border border-[#8b6c42] bg-[rgba(139,108,66,0.35)]"
+          style={{
+            left: JOYSTICK_R + joystickPos.x - 14,
+            top: JOYSTICK_R + joystickPos.y - 14,
+          }}
+        />
       </div>
 
       {/* Side drawer */}

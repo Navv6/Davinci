@@ -588,7 +588,7 @@ export function MobileIdeaSpace({ onRestart, topic }: MobileIdeaSpaceProps) {
       // Joystick pan
       const jv = joystickVecRef.current;
       if (jv.x !== 0 || jv.y !== 0) {
-        const panScale = zoom * 0.0015;
+        const panScale = zoom * 0.005;
         userPanTarget.x -= jv.x * panScale;
         userPanTarget.y -= jv.y * panScale;
       }
@@ -733,9 +733,12 @@ export function MobileIdeaSpace({ onRestart, topic }: MobileIdeaSpaceProps) {
         <button
           type="button"
           onClick={onRestart}
-          className="rounded-full border border-[#e8d5b8] bg-[rgba(250,248,243,0.92)] px-4 py-2 text-[12px] italic tracking-[0.12em] text-[#8b6c42]"
+          className="grid h-9 w-9 place-items-center rounded-full border border-[#e8d5b8] bg-[rgba(250,248,243,0.92)] text-[#8b6c42]"
+          aria-label="처음으로"
         >
-          처음으로
+          <svg width="16" height="15" viewBox="0 0 16 15" fill="none" aria-hidden>
+            <path d="M1 7L8 1L15 7V14H10.5V10H5.5V14H1V7Z" stroke="currentColor" strokeWidth="1.4" strokeLinejoin="round"/>
+          </svg>
         </button>
 
         <span className="font-display text-[1.1rem] tracking-[0.04em] text-[#1a1208]">

@@ -1005,9 +1005,12 @@ export function IdeaSpace({ onRestart, topic }: IdeaSpaceProps) {
           <button
             type="button"
             onClick={onRestart}
-            className="rounded-full border border-[#e8d5b8] bg-[rgba(250,248,243,0.92)] px-4 py-2 text-[11px] italic tracking-[0.15em] text-[#8b6c42] transition-all duration-200 hover:border-[#8b6c42] hover:bg-[#8b6c42] hover:text-[#faf8f3]"
+            className="grid h-[38px] w-[38px] place-items-center rounded-full border border-[#e8d5b8] bg-[rgba(250,248,243,0.92)] text-[#8b6c42] transition-all duration-200 hover:border-[#8b6c42] hover:bg-[#8b6c42] hover:text-[#faf8f3]"
+            aria-label="처음으로"
           >
-            처음으로
+            <svg width="16" height="15" viewBox="0 0 16 15" fill="none" aria-hidden>
+              <path d="M1 7L8 1L15 7V14H10.5V10H5.5V14H1V7Z" stroke="currentColor" strokeWidth="1.4" strokeLinejoin="round"/>
+            </svg>
           </button>
           <button
             type="button"

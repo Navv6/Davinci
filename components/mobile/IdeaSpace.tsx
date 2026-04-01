@@ -667,7 +667,7 @@ export function MobileIdeaSpace({ onRestart, topic }: MobileIdeaSpaceProps) {
       {/* Top bar */}
       <div
         data-graph-control
-        className="pointer-events-auto absolute left-0 right-0 top-0 z-30 flex items-center justify-between px-4 py-3"
+        className="pointer-events-auto fixed left-0 right-0 top-0 z-30 flex items-center justify-between px-4 py-3"
         style={{ background: "linear-gradient(to bottom, rgba(250,248,243,0.95) 70%, transparent)" }}
       >
         <button
@@ -706,7 +706,7 @@ export function MobileIdeaSpace({ onRestart, topic }: MobileIdeaSpaceProps) {
       {/* Bottom panel */}
       <div
         data-graph-control
-        className={`pointer-events-auto absolute bottom-0 left-0 right-0 z-30 rounded-t-[1.75rem] border-t border-[#e8d5b8] bg-[rgba(250,248,243,0.98)] px-5 pb-8 pt-5 shadow-[0_-12px_32px_rgba(61,43,18,0.08)] backdrop-blur-md transition-transform duration-300 ${
+        className={`pointer-events-auto fixed bottom-0 left-0 right-0 z-30 rounded-t-[1.75rem] border-t border-[#e8d5b8] bg-[rgba(250,248,243,0.98)] px-5 pb-8 pt-5 shadow-[0_-12px_32px_rgba(61,43,18,0.08)] backdrop-blur-md transition-transform duration-300 ${
           panelOpen && selectedNode ? "translate-y-0" : "translate-y-full"
         }`}
       >

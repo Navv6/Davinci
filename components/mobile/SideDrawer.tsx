@@ -138,7 +138,7 @@ export function SideDrawer({
     <>
       {/* Backdrop */}
       <div
-        className={`absolute inset-0 z-40 bg-[rgba(26,18,8,0.18)] transition-opacity duration-300 ${
+        className={`fixed inset-0 z-40 bg-[rgba(26,18,8,0.18)] transition-opacity duration-300 ${
           open ? "pointer-events-auto opacity-100" : "pointer-events-none opacity-0"
         }`}
         onClick={onClose}
@@ -147,7 +147,7 @@ export function SideDrawer({
       {/* Drawer */}
       <aside
         data-graph-control
-        className={`absolute bottom-0 right-0 top-0 z-50 flex w-[min(20rem,85vw)] flex-col bg-[rgba(250,248,243,0.99)] shadow-[-12px_0_40px_rgba(61,43,18,0.1)] transition-transform duration-300 ${
+        className={`fixed bottom-0 right-0 top-0 z-50 flex w-[min(20rem,85vw)] flex-col bg-[rgba(250,248,243,0.99)] shadow-[-12px_0_40px_rgba(61,43,18,0.1)] transition-transform duration-300 ${
           open ? "translate-x-0" : "translate-x-full"
         }`}
       >

@@ -8,7 +8,9 @@ import {
   useRef,
   useState,
 } from "react";
-import type { SequenceStage } from "@/types/davinci";
+import { clearGraph, loadGraph } from "@/lib/storage";
+import type { SavedGraph } from "@/lib/storage";
+import type { GraphSeed, SequenceStage } from "@/types/davinci";
 
 const MobileIdeaSpace = dynamic(
   () =>
@@ -26,7 +28,12 @@ export function DavinciExperience({ initialTopic }: DavinciExperienceProps) {
   const [stage, setStage] = useState<SequenceStage>("idle");
   const inputRef = useRef<HTMLInputElement>(null);
 
+  const [savedGraph, setSavedGraph] = useState<SavedGraph | null>(loadGraph);
+  const [initialSeed, setInitialSeed] = useState<GraphSeed | undefined>();
+  const [initialMemo, setInitialMemo] = useState<string | undefined>();
+
   const isGraph = stage === "graph";
+  const showRecovery = savedGraph !== null && !isGraph;
 
   useEffect(() => {
     if (stage === "idle") {
@@ -46,12 +53,38 @@ export function DavinciExperience({ initialTopic }: DavinciExperienceProps) {
   };
 
   const handleRestart = useCallback(() => {
+    setInitialSeed(undefined);
+    setInitialMemo(undefined);
     setStage("idle");
     setTopicInput(topic);
   }, [topic]);
 
+  const handleResume = () => {
+    if (!savedGraph) return;
+    setSavedGraph(null);
+    startTransition(() => {
+      setTopic(savedGraph.topic);
+      setTopicInput(savedGraph.topic);
+      setInitialSeed(savedGraph.seed);
+      setInitialMemo(savedGraph.memo);
+      setStage("graph");
+    });
+  };
+
+  const handleFreshStart = () => {
+    clearGraph();
+    setSavedGraph(null);
+  };
+
   if (isGraph) {
-    return <MobileIdeaSpace topic={topic} onRestart={handleRestart} />;
+    return (
+      <MobileIdeaSpace
+        topic={topic}
+        onRestart={handleRestart}
+        initialSeed={initialSeed}
+        initialMemo={initialMemo}
+      />
+    );
   }
 
   return (
@@ -81,28 +114,56 @@ export function DavinciExperience({ initialTopic }: DavinciExperienceProps) {
           생각의 형태를 찾는 곳
         </p>
 
-        <form
-          onSubmit={handleSubmit}
-          className="mt-10 flex w-full flex-col gap-3"
-        >
-          <input
-            ref={inputRef}
-            value={topicInput}
-            onChange={(e) => setTopicInput(e.target.value)}
-            maxLength={20}
-            autoComplete="off"
-            placeholder="첫 번째 주제를 입력해보세요"
-            className="w-full border border-[#c4a882] bg-[rgba(255,252,245,0.92)] px-5 py-4 text-[17px] font-light tracking-[0.04em] text-[#1a1208] outline-none placeholder:italic placeholder:text-[#d4b896]"
-          />
-
-          <button
-            type="submit"
-            disabled={!topicInput.trim()}
-            className="w-full bg-[#8b6c42] py-4 text-[15px] italic tracking-[0.1em] text-[#faf8f3] transition-colors duration-200 active:bg-[#6b4f2f] disabled:opacity-40"
+        {showRecovery && savedGraph ? (
+          <div className="mt-8 w-full border border-[#c4a882] bg-[rgba(255,252,245,0.95)] px-5 py-5">
+            <p className="text-[10px] italic uppercase tracking-[0.3em] text-[#8b6c42]">
+              이전 작업
+            </p>
+            <p className="mt-2 font-display text-[1.3rem] tracking-[0.04em] text-[#1a1208]">
+              {savedGraph.topic}
+            </p>
+            <p className="mt-1 text-[10px] tracking-[0.08em] text-[#c4a882]">
+              {new Date(savedGraph.savedAt).toLocaleString("ko-KR")} 저장
+            </p>
+            <div className="mt-4 flex gap-2">
+              <button
+                onClick={handleResume}
+                className="flex-1 bg-[#8b6c42] py-3 text-[13px] italic tracking-[0.08em] text-[#faf8f3]"
+              >
+                이어하기
+              </button>
+              <button
+                onClick={handleFreshStart}
+                className="flex-1 border border-[#c4a882] py-3 text-[13px] italic tracking-[0.08em] text-[#8b6c42]"
+              >
+                새로 시작
+              </button>
+            </div>
+          </div>
+        ) : (
+          <form
+            onSubmit={handleSubmit}
+            className="mt-10 flex w-full flex-col gap-3"
           >
-            시작하기
-          </button>
-        </form>
+            <input
+              ref={inputRef}
+              value={topicInput}
+              onChange={(e) => setTopicInput(e.target.value)}
+              maxLength={20}
+              autoComplete="off"
+              placeholder="첫 번째 주제를 입력해보세요"
+              className="w-full border border-[#c4a882] bg-[rgba(255,252,245,0.92)] px-5 py-4 text-[17px] font-light tracking-[0.04em] text-[#1a1208] outline-none placeholder:italic placeholder:text-[#d4b896]"
+            />
+
+            <button
+              type="submit"
+              disabled={!topicInput.trim()}
+              className="w-full bg-[#8b6c42] py-4 text-[15px] italic tracking-[0.1em] text-[#faf8f3] transition-colors duration-200 active:bg-[#6b4f2f] disabled:opacity-40"
+            >
+              시작하기
+            </button>
+          </form>
+        )}
       </div>
     </section>
   );

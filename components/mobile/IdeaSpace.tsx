@@ -4,10 +4,18 @@ import { useEffect, useMemo, useRef, useState } from "react";
 import * as THREE from "three";
 import { SideDrawer } from "@/components/mobile/SideDrawer";
 import { MiniMapPanel } from "@/components/desktop/MiniMapPanel";
+import {
+  getRemainingAIUses,
+  hasRemainingAIUsage,
+  incrementAIUsageCount,
+} from "@/lib/aiUsage";
 import { createGraphSeed, createSpawnedNode, getPaletteForLevel } from "@/lib/graphData";
-import type { GraphEdge, GraphNode } from "@/types/davinci";
+import { saveGraph } from "@/lib/storage";
+import type { GraphEdge, GraphNode, GraphSeed } from "@/types/davinci";
 
 type MobileIdeaSpaceProps = {
+  initialMemo?: string;
+  initialSeed?: GraphSeed;
   onRestart: () => void;
   topic: string;
 };
@@ -33,6 +41,10 @@ type EdgeRuntime = {
 type GraphApi = {
   deleteSelectedNode: () => void;
   selectNode: (id: number) => void;
+  spawnMultipleNodes: (
+    parentId: number,
+    ideas: Array<{ description: string; label: string }>,
+  ) => void;
   spawnNode: (parentId: number) => void;
   updateNode: (id: number, patch: Pick<GraphNode, "description" | "label">) => void;
 };
@@ -81,15 +93,30 @@ const CATEGORY_LABEL = {
   reference: "레퍼런스",
 } as const;
 
-export function MobileIdeaSpace({ onRestart, topic }: MobileIdeaSpaceProps) {
+export function MobileIdeaSpace({ initialMemo, initialSeed, onRestart, topic }: MobileIdeaSpaceProps) {
   const containerRef = useRef<HTMLDivElement>(null);
   const canvasRef = useRef<HTMLCanvasElement>(null);
   const labelsRef = useRef<SVGSVGElement>(null);
   const graphApiRef = useRef<GraphApi | null>(null);
   const labelFocusedNodes = useRef(new Set<number>());
   const descFocusedNodes = useRef(new Set<number>());
-  const seed = useMemo(() => createGraphSeed(topic), [topic]);
+  const memoRef = useRef(initialMemo ?? "");
+  const seed = useMemo(
+    () => initialSeed ?? createGraphSeed(topic),
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+    [topic],
+  );
+  const persistStateRef = useRef<{
+    edges: GraphEdge[];
+    nextId: number;
+    nodes: GraphNode[];
+  }>({
+    nodes: seed.nodes,
+    edges: seed.edges,
+    nextId: seed.nextId,
+  });
 
+  const [webglFailed, setWebglFailed] = useState(false);
   const [selectedNode, setSelectedNode] = useState<GraphNode | null>(
     seed.nodes[seed.rootId] ?? null,
   );
@@ -101,7 +128,10 @@ export function MobileIdeaSpace({ onRestart, topic }: MobileIdeaSpaceProps) {
   const [drawerOpen, setDrawerOpen] = useState(false);
   const [snapshotNodes, setSnapshotNodes] = useState<GraphNode[]>(seed.nodes);
   const [snapshotEdges, setSnapshotEdges] = useState<GraphEdge[]>(seed.edges);
-  const [workspaceMemo, setWorkspaceMemo] = useState("");
+  const [workspaceMemo, setWorkspaceMemo] = useState(initialMemo ?? "");
+  const [aiExpanding, setAIExpanding] = useState(false);
+  const [aiError, setAIError] = useState<string | null>(null);
+  const [remainingAIUses, setRemainingAIUses] = useState(() => getRemainingAIUses());
   const [miniMapView, setMiniMapView] = useState({
     focusX: seed.nodes[seed.rootId]?.x ?? 0,
     focusY: seed.nodes[seed.rootId]?.y ?? 0,
@@ -131,7 +161,18 @@ export function MobileIdeaSpace({ onRestart, topic }: MobileIdeaSpaceProps) {
     const labelMeasureCanvas = document.createElement("canvas");
     const labelMeasureContext = labelMeasureCanvas.getContext("2d");
 
-    const renderer = new THREE.WebGLRenderer({ alpha: true, antialias: true, canvas });
+    let renderer: THREE.WebGLRenderer;
+    try {
+      renderer = new THREE.WebGLRenderer({ alpha: true, antialias: true, canvas });
+    } catch {
+      setWebglFailed(true);
+      return;
+    }
+    canvas.addEventListener(
+      "webglcontextlost",
+      (e) => { e.preventDefault(); setWebglFailed(true); },
+      { once: true },
+    );
     renderer.setClearColor(0xfaf8f3, 1);
     renderer.setPixelRatio(Math.min(window.devicePixelRatio, 2));
 
@@ -178,14 +219,29 @@ export function MobileIdeaSpace({ onRestart, topic }: MobileIdeaSpaceProps) {
     let touchStartY = 0;
     let touchMoved = false;
 
+    const updatePersistState = () => {
+      persistStateRef.current = {
+        nodes: nodes.map((node) => stripRuntimeNode(node)),
+        edges: [...edges],
+        nextId,
+      };
+    };
+
     const syncReactState = (id: number) => {
       const node = nodeMap.get(id);
       const root = nodeMap.get(seed.rootId);
+      const strippedNodes = nodes.map((n) => stripRuntimeNode(n));
+      const strippedEdges = [...edges];
       setSelectedNode(node ? stripRuntimeNode(node) : null);
       setSelectedNodeId(id);
       setRootNode(root ? stripRuntimeNode(root) : null);
-      setSnapshotNodes(nodes.map((n) => stripRuntimeNode(n)));
-      setSnapshotEdges([...edges]);
+      setSnapshotNodes(strippedNodes);
+      setSnapshotEdges(strippedEdges);
+      persistStateRef.current = {
+        nodes: strippedNodes,
+        edges: strippedEdges,
+        nextId,
+      };
     };
 
     const setSelected = (id: number) => {
@@ -193,6 +249,21 @@ export function MobileIdeaSpace({ onRestart, topic }: MobileIdeaSpaceProps) {
       const node = nodeMap.get(id);
       if (node) focusTarget.set(node.x, node.y, node.z);
       syncReactState(id);
+    };
+
+    const persistGraph = () => {
+      updatePersistState();
+      saveGraph({
+        topic,
+        seed: {
+          rootId: seed.rootId,
+          nextId: persistStateRef.current.nextId,
+          nodes: persistStateRef.current.nodes,
+          edges: persistStateRef.current.edges,
+        },
+        memo: memoRef.current,
+        savedAt: new Date().toISOString(),
+      });
     };
 
     const makeNode = (node: RuntimeNode, animated: boolean) => {
@@ -278,6 +349,44 @@ export function MobileIdeaSpace({ onRestart, topic }: MobileIdeaSpaceProps) {
       makeEdge(parentId, runtimeNode.id, true);
       setSelected(runtimeNode.id);
       setPanelOpen(true);
+      persistGraph();
+    };
+
+    const spawnMultipleNodes = (
+      parentId: number,
+      ideas: Array<{ description: string; label: string }>,
+    ) => {
+      const parent = nodeMap.get(parentId);
+      if (!parent || ideas.length === 0) return;
+
+      let siblingCount = edges.filter(([from]) => from === parentId).length;
+      const spawnedIds: number[] = [];
+
+      for (const idea of ideas) {
+        const node = createSpawnedNode(idea.label, nextId, parent, siblingCount);
+        node.description = idea.description;
+
+        const runtimeNode: RuntimeNode = {
+          ...node,
+          bornAt: performance.now() + spawnedIds.length * 80,
+        };
+
+        nextId += 1;
+        siblingCount += 1;
+        nodes.push(runtimeNode);
+        nodeMap.set(runtimeNode.id, runtimeNode);
+        edges.push([parentId, runtimeNode.id]);
+        makeNode(runtimeNode, true);
+        makeEdge(parentId, runtimeNode.id, true);
+        spawnedIds.push(runtimeNode.id);
+      }
+
+      if (spawnedIds[0] !== undefined) {
+        setSelected(spawnedIds[0]);
+        setPanelOpen(true);
+      }
+
+      persistGraph();
     };
 
     const updateNode = (id: number, patch: Pick<GraphNode, "description" | "label">) => {
@@ -286,6 +395,7 @@ export function MobileIdeaSpace({ onRestart, topic }: MobileIdeaSpaceProps) {
       node.label = patch.label;
       node.description = patch.description;
       syncReactState(id);
+      persistGraph();
     };
 
     const deleteSelectedNode = () => {
@@ -329,6 +439,7 @@ export function MobileIdeaSpace({ onRestart, topic }: MobileIdeaSpaceProps) {
       }
 
       setSelected(parentId);
+      persistGraph();
     };
 
     nodes.forEach((node) => makeNode(node, node.born > 0));
@@ -493,7 +604,13 @@ export function MobileIdeaSpace({ onRestart, topic }: MobileIdeaSpaceProps) {
       }
     };
 
-    graphApiRef.current = { spawnNode, selectNode: setSelected, updateNode, deleteSelectedNode };
+    graphApiRef.current = {
+      spawnMultipleNodes,
+      spawnNode,
+      selectNode: setSelected,
+      updateNode,
+      deleteSelectedNode,
+    };
 
     // Touch controls: single finger = rotate, pinch = zoom, tap = select
     const handleTouchStart = (event: TouchEvent) => {
@@ -669,7 +786,28 @@ export function MobileIdeaSpace({ onRestart, topic }: MobileIdeaSpaceProps) {
       renderer.dispose();
       graphGroup.clear();
     };
+    // eslint-disable-next-line react-hooks/exhaustive-deps
   }, [seed]);
+
+  useEffect(() => {
+    setAIError(null);
+  }, [selectedNodeId]);
+
+  const handleMemoChange = (value: string) => {
+    memoRef.current = value;
+    setWorkspaceMemo(value);
+    saveGraph({
+      topic,
+      seed: {
+        rootId: seed.rootId,
+        nextId: persistStateRef.current.nextId,
+        nodes: persistStateRef.current.nodes,
+        edges: persistStateRef.current.edges,
+      },
+      memo: value,
+      savedAt: new Date().toISOString(),
+    });
+  };
 
   const handleLabelChange = (value: string) => {
     if (!selectedNode) return;
@@ -684,6 +822,69 @@ export function MobileIdeaSpace({ onRestart, topic }: MobileIdeaSpaceProps) {
   const handleDelete = () => {
     graphApiRef.current?.deleteSelectedNode();
     setPanelOpen(false);
+  };
+
+  const handleAIExpand = async () => {
+    if (!selectedNode || aiExpanding || !hasRemainingAIUsage()) return;
+
+    const currentNode = selectedNode;
+    setAIError(null);
+    setAIExpanding(true);
+
+    try {
+      const response = await fetch("/api/ai-expand", {
+        method: "POST",
+        headers: {
+          "Content-Type": "application/json",
+        },
+        body: JSON.stringify({
+          nodeLabel: currentNode.label,
+          nodeDescription: currentNode.description,
+          topic,
+          existingLabels: snapshotNodes.map((node) => node.label),
+        }),
+      });
+
+      const payload = (await response.json()) as {
+        error?: string;
+        ideas?: Array<{ description: string; label: string }>;
+      };
+
+      if (!response.ok) {
+        throw new Error(payload.error || "AI 요청에 실패했습니다.");
+      }
+
+      const existingLabels = new Set(
+        snapshotNodes.map((node) => node.label.trim().toLocaleLowerCase("ko-KR")),
+      );
+      const seen = new Set<string>();
+      const ideas =
+        payload.ideas?.filter((idea) => {
+          const normalized = idea.label.trim().toLocaleLowerCase("ko-KR");
+          if (!normalized || existingLabels.has(normalized) || seen.has(normalized)) {
+            return false;
+          }
+
+          seen.add(normalized);
+          return true;
+        }) ?? [];
+
+      if (ideas.length === 0) {
+        setAIError("추가할 아이디어를 찾지 못했습니다.");
+        return;
+      }
+
+      graphApiRef.current?.spawnMultipleNodes(currentNode.id, ideas);
+      incrementAIUsageCount();
+      setRemainingAIUses(getRemainingAIUses());
+    } catch (error) {
+      console.error("[AI Expand]", error);
+      setAIError(
+        error instanceof Error ? error.message : "AI 확장 중 오류가 발생했습니다.",
+      );
+    } finally {
+      setAIExpanding(false);
+    }
   };
 
   const category = selectedNode?.category ?? "idea";
@@ -719,6 +920,25 @@ export function MobileIdeaSpace({ onRestart, topic }: MobileIdeaSpaceProps) {
     joystickVecRef.current = { x: 0, y: 0 };
     setJoystickPos({ x: 0, y: 0 });
   };
+
+  if (webglFailed) {
+    return (
+      <div className="absolute inset-0 flex flex-col items-center justify-center gap-4 bg-[#faf8f3] px-8 text-center">
+        <p className="font-display text-[1.6rem] tracking-[0.04em] text-[#1a1208]">
+          그래프를 불러올 수 없습니다
+        </p>
+        <p className="text-[13px] italic tracking-[0.1em] text-[#8b6c42]">
+          3D 그래픽을 지원하지 않는 환경입니다
+        </p>
+        <button
+          onClick={onRestart}
+          className="mt-4 border border-[#c4a882] px-8 py-3 text-[13px] italic tracking-[0.12em] text-[#8b6c42]"
+        >
+          돌아가기
+        </button>
+      </div>
+    );
+  }
 
   return (
     <div ref={containerRef} className="absolute inset-0 bg-[#faf8f3]">
@@ -827,6 +1047,36 @@ export function MobileIdeaSpace({ onRestart, topic }: MobileIdeaSpaceProps) {
               className="mt-3 w-full resize-none bg-transparent text-[13px] leading-6 tracking-[0.02em] text-[#5d4528] outline-none placeholder:text-[#d4b896]"
               placeholder="내용을 입력하세요"
             />
+
+            <div className="mt-4 border-t border-[#e8d5b8] pt-4">
+              {remainingAIUses > 0 ? (
+                <button
+                  type="button"
+                  onClick={handleAIExpand}
+                  disabled={aiExpanding}
+                  className="flex w-full items-center justify-between rounded-[0.75rem] border border-[#e8d5b8] px-4 py-3 text-[13px] italic tracking-[0.1em] text-[#8b6c42] disabled:opacity-50"
+                >
+                  <span>{aiExpanding ? "확장 중.." : "AI로 아이디어 확장"}</span>
+                  {aiExpanding ? (
+                    <span className="h-3.5 w-3.5 animate-spin rounded-full border border-[#c4a882] border-t-[#8b6c42]" />
+                  ) : (
+                    <span className="not-italic text-[11px] tracking-[0.15em] text-[#c4a882]">
+                      {remainingAIUses}/3
+                    </span>
+                  )}
+                </button>
+              ) : (
+                <p className="text-center text-[12px] italic tracking-[0.12em] text-[#c4a882]">
+                  구독이 필요합니다 (0/3)
+                </p>
+              )}
+
+              {aiError ? (
+                <p className="mt-2 text-[11px] italic tracking-[0.08em] text-[#b86b4b]">
+                  {aiError}
+                </p>
+              ) : null}
+            </div>
           </>
         ) : null}
       </div>
@@ -850,7 +1100,7 @@ export function MobileIdeaSpace({ onRestart, topic }: MobileIdeaSpaceProps) {
       <div
         data-graph-control
         className="fixed z-20 touch-none"
-        style={{ bottom: panelOpen ? 220 : 40, left: 20, width: JOYSTICK_R * 2, height: JOYSTICK_R * 2 }}
+        style={{ bottom: panelOpen ? 270 : 40, left: 20, width: JOYSTICK_R * 2, height: JOYSTICK_R * 2 }}
         onTouchStart={handleJoystickStart}
         onTouchMove={handleJoystickMove}
         onTouchEnd={handleJoystickEnd}
@@ -873,7 +1123,7 @@ export function MobileIdeaSpace({ onRestart, topic }: MobileIdeaSpaceProps) {
         memo={workspaceMemo}
         nodes={snapshotNodes}
         onClose={() => setDrawerOpen(false)}
-        onMemoChange={setWorkspaceMemo}
+        onMemoChange={handleMemoChange}
         onSelectNode={(id) => {
           graphApiRef.current?.selectNode(id);
           setDrawerOpen(false);

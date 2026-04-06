@@ -43,7 +43,23 @@ export default function RootLayout({
         } as CSSProperties
       }
     >
-      <body className="flex min-h-full flex-col overflow-hidden">{children}</body>
+      <body className="flex min-h-full flex-col">
+        {children}
+        <footer className="pointer-events-none fixed bottom-0 left-0 right-0 z-10 flex justify-center gap-6 pb-3 text-[10px] italic tracking-[0.16em] text-[#c4a882]">
+          <a
+            href="/privacy"
+            className="pointer-events-auto transition-colors hover:text-[#8b6c42]"
+          >
+            개인정보처리방침
+          </a>
+          <a
+            href="/terms"
+            className="pointer-events-auto transition-colors hover:text-[#8b6c42]"
+          >
+            이용약관
+          </a>
+        </footer>
+      </body>
     </html>
   );
 }

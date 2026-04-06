@@ -5,10 +5,18 @@ import * as THREE from "three";
 import { IdeaSidebar } from "@/components/desktop/IdeaSidebar";
 import { MiniMapPanel } from "@/components/desktop/MiniMapPanel";
 import { NodeInfoPanel } from "@/components/desktop/NodeInfoPanel";
+import {
+  getRemainingAIUses,
+  hasRemainingAIUsage,
+  incrementAIUsageCount,
+} from "@/lib/aiUsage";
 import { createGraphSeed, createSpawnedNode, getPaletteForLevel } from "@/lib/graphData";
-import type { GraphEdge, GraphNode } from "@/types/davinci";
+import { saveGraph } from "@/lib/storage";
+import type { GraphEdge, GraphNode, GraphSeed } from "@/types/davinci";
 
 type IdeaSpaceProps = {
+  initialMemo?: string;
+  initialSeed?: GraphSeed;
   onRestart: () => void;
   topic: string;
 };
@@ -36,6 +44,10 @@ type EdgeRuntime = {
 type GraphApi = {
   deleteSelectedNode: () => void;
   selectNode: (id: number) => void;
+  spawnMultipleNodes: (
+    parentId: number,
+    ideas: Array<{ description: string; label: string }>,
+  ) => void;
   spawnNode: (parentId: number) => void;
   updateNode: (id: number, patch: Pick<GraphNode, "description" | "label">) => void;
 };
@@ -91,13 +103,28 @@ function disposeNodeRuntime(runtime: NodeRuntime) {
   });
 }
 
-export function IdeaSpace({ onRestart, topic }: IdeaSpaceProps) {
+export function IdeaSpace({ initialMemo, initialSeed, onRestart, topic }: IdeaSpaceProps) {
   const containerRef = useRef<HTMLDivElement>(null);
   const canvasRef = useRef<HTMLCanvasElement>(null);
   const labelsRef = useRef<SVGSVGElement>(null);
   const graphApiRef = useRef<GraphApi | null>(null);
-  const seed = useMemo(() => createGraphSeed(topic), [topic]);
+  const memoRef = useRef(initialMemo ?? "");
+  const seed = useMemo(
+    () => initialSeed ?? createGraphSeed(topic),
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+    [topic],
+  );
+  const persistStateRef = useRef<{
+    edges: GraphEdge[];
+    nextId: number;
+    nodes: GraphNode[];
+  }>({
+    nodes: seed.nodes,
+    edges: seed.edges,
+    nextId: seed.nextId,
+  });
 
+  const [webglFailed, setWebglFailed] = useState(false);
   const [selectedNode, setSelectedNode] = useState<GraphNode | null>(
     seed.nodes[seed.rootId] ?? null,
   );
@@ -108,7 +135,10 @@ export function IdeaSpace({ onRestart, topic }: IdeaSpaceProps) {
   const [snapshotNodes, setSnapshotNodes] = useState<GraphNode[]>(seed.nodes);
   const [snapshotEdges, setSnapshotEdges] = useState<GraphEdge[]>(seed.edges);
   const [sidebarOpen, setSidebarOpen] = useState(false);
-  const [workspaceMemo, setWorkspaceMemo] = useState("");
+  const [workspaceMemo, setWorkspaceMemo] = useState(initialMemo ?? "");
+  const [aiExpanding, setAIExpanding] = useState(false);
+  const [aiError, setAIError] = useState<string | null>(null);
+  const [remainingAIUses, setRemainingAIUses] = useState(() => getRemainingAIUses());
   const [miniMapView, setMiniMapView] = useState({
     focusX: seed.nodes[seed.rootId]?.x ?? 0,
     focusY: seed.nodes[seed.rootId]?.y ?? 0,
@@ -138,11 +168,22 @@ export function IdeaSpace({ onRestart, topic }: IdeaSpaceProps) {
     const labelMeasureCanvas = document.createElement("canvas");
     const labelMeasureContext = labelMeasureCanvas.getContext("2d");
 
-    const renderer = new THREE.WebGLRenderer({
-      alpha: true,
-      antialias: true,
-      canvas,
-    });
+    let renderer: THREE.WebGLRenderer;
+    try {
+      renderer = new THREE.WebGLRenderer({
+        alpha: true,
+        antialias: true,
+        canvas,
+      });
+    } catch {
+      setWebglFailed(true);
+      return;
+    }
+    canvas.addEventListener(
+      "webglcontextlost",
+      (e) => { e.preventDefault(); setWebglFailed(true); },
+      { once: true },
+    );
     renderer.setClearColor(0xfaf8f3, 1);
     renderer.setPixelRatio(Math.min(window.devicePixelRatio, 2));
 
@@ -200,15 +241,30 @@ export function IdeaSpace({ onRestart, topic }: IdeaSpaceProps) {
       );
     };
 
+    const updatePersistState = () => {
+      persistStateRef.current = {
+        nodes: stripRuntimeNodes(nodes),
+        edges: [...edges],
+        nextId,
+      };
+    };
+
     const syncReactState = (id: number) => {
       const node = nodeMap.get(id);
       const root = nodeMap.get(seed.rootId);
+      const strippedNodes = stripRuntimeNodes(nodes);
+      const strippedEdges = [...edges];
 
       setSelectedNode(node ? stripRuntimeNode(node) : null);
       setSelectedNodeId(id);
       setRootNode(root ? stripRuntimeNode(root) : null);
-      setSnapshotNodes(stripRuntimeNodes(nodes));
-      setSnapshotEdges([...edges]);
+      setSnapshotNodes(strippedNodes);
+      setSnapshotEdges(strippedEdges);
+      persistStateRef.current = {
+        nodes: strippedNodes,
+        edges: strippedEdges,
+        nextId,
+      };
     };
 
     const setSelected = (id: number) => {
@@ -220,6 +276,21 @@ export function IdeaSpace({ onRestart, topic }: IdeaSpaceProps) {
       }
 
       syncReactState(id);
+    };
+
+    const persistGraph = () => {
+      updatePersistState();
+      saveGraph({
+        topic,
+        seed: {
+          rootId: seed.rootId,
+          nextId: persistStateRef.current.nextId,
+          nodes: persistStateRef.current.nodes,
+          edges: persistStateRef.current.edges,
+        },
+        memo: memoRef.current,
+        savedAt: new Date().toISOString(),
+      });
     };
 
     const makeNode = (node: RuntimeNode, animated: boolean) => {
@@ -330,6 +401,45 @@ export function IdeaSpace({ onRestart, topic }: IdeaSpaceProps) {
       makeNode(runtimeNode, true);
       makeEdge(parentId, runtimeNode.id, true);
       setSelected(runtimeNode.id);
+      persistGraph();
+    };
+
+    const spawnMultipleNodes = (
+      parentId: number,
+      ideas: Array<{ description: string; label: string }>,
+    ) => {
+      const parent = nodeMap.get(parentId);
+      if (!parent || ideas.length === 0) {
+        return;
+      }
+
+      let siblingCount = edges.filter(([from]) => from === parentId).length;
+      const spawnedIds: number[] = [];
+
+      for (const idea of ideas) {
+        const node = createSpawnedNode(idea.label, nextId, parent, siblingCount);
+        node.description = idea.description;
+
+        const runtimeNode: RuntimeNode = {
+          ...node,
+          bornAt: performance.now() + spawnedIds.length * 80,
+        };
+
+        nextId += 1;
+        siblingCount += 1;
+        nodes.push(runtimeNode);
+        nodeMap.set(runtimeNode.id, runtimeNode);
+        edges.push([parentId, runtimeNode.id]);
+        makeNode(runtimeNode, true);
+        makeEdge(parentId, runtimeNode.id, true);
+        spawnedIds.push(runtimeNode.id);
+      }
+
+      if (spawnedIds[0] !== undefined) {
+        setSelected(spawnedIds[0]);
+      }
+
+      persistGraph();
     };
 
     const updateNode = (
@@ -345,6 +455,7 @@ export function IdeaSpace({ onRestart, topic }: IdeaSpaceProps) {
       node.label = patch.label;
       node.description = patch.description;
       syncReactState(id);
+      persistGraph();
     };
 
     const deleteSelectedNode = () => {
@@ -405,6 +516,7 @@ export function IdeaSpace({ onRestart, topic }: IdeaSpaceProps) {
       }
 
       setSelected(parentId);
+      persistGraph();
     };
 
     nodes.forEach((node) => makeNode(node, node.born > 0));
@@ -608,6 +720,7 @@ export function IdeaSpace({ onRestart, topic }: IdeaSpaceProps) {
     };
 
     graphApiRef.current = {
+      spawnMultipleNodes,
       spawnNode,
       selectNode: setSelected,
       updateNode,
@@ -940,7 +1053,28 @@ export function IdeaSpace({ onRestart, topic }: IdeaSpaceProps) {
       renderer.dispose();
       graphGroup.clear();
     };
+    // eslint-disable-next-line react-hooks/exhaustive-deps
   }, [seed]);
+
+  useEffect(() => {
+    setAIError(null);
+  }, [selectedNodeId]);
+
+  const handleMemoChange = (value: string) => {
+    memoRef.current = value;
+    setWorkspaceMemo(value);
+    saveGraph({
+      topic,
+      seed: {
+        rootId: seed.rootId,
+        nextId: persistStateRef.current.nextId,
+        nodes: persistStateRef.current.nodes,
+        edges: persistStateRef.current.edges,
+      },
+      memo: value,
+      savedAt: new Date().toISOString(),
+    });
+  };
 
   const handleDeleteNode = () => {
     graphApiRef.current?.deleteSelectedNode();
@@ -975,6 +1109,90 @@ export function IdeaSpace({ onRestart, topic }: IdeaSpaceProps) {
       description: value,
     });
   };
+
+  const handleAIExpand = async () => {
+    if (!selectedNode || aiExpanding || !hasRemainingAIUsage()) {
+      return;
+    }
+
+    const currentNode = selectedNode;
+    setAIError(null);
+    setAIExpanding(true);
+
+    try {
+      const response = await fetch("/api/ai-expand", {
+        method: "POST",
+        headers: {
+          "Content-Type": "application/json",
+        },
+        body: JSON.stringify({
+          nodeLabel: currentNode.label,
+          nodeDescription: currentNode.description,
+          topic,
+          existingLabels: snapshotNodes.map((node) => node.label),
+        }),
+      });
+
+      const payload = (await response.json()) as {
+        error?: string;
+        ideas?: Array<{ description: string; label: string }>;
+      };
+
+      if (!response.ok) {
+        throw new Error(payload.error || "AI 요청에 실패했습니다.");
+      }
+
+      const existingLabels = new Set(
+        snapshotNodes.map((node) => node.label.trim().toLocaleLowerCase("ko-KR")),
+      );
+      const seen = new Set<string>();
+      const ideas =
+        payload.ideas?.filter((idea) => {
+          const normalized = idea.label.trim().toLocaleLowerCase("ko-KR");
+          if (!normalized || existingLabels.has(normalized) || seen.has(normalized)) {
+            return false;
+          }
+
+          seen.add(normalized);
+          return true;
+        }) ?? [];
+
+      if (ideas.length === 0) {
+        setAIError("추가할 아이디어를 찾지 못했습니다.");
+        return;
+      }
+
+      graphApiRef.current?.spawnMultipleNodes(currentNode.id, ideas);
+      incrementAIUsageCount();
+      setRemainingAIUses(getRemainingAIUses());
+    } catch (error) {
+      console.error("[AI Expand]", error);
+      setAIError(
+        error instanceof Error ? error.message : "AI 확장 중 오류가 발생했습니다.",
+      );
+    } finally {
+      setAIExpanding(false);
+    }
+  };
+
+  if (webglFailed) {
+    return (
+      <div className="absolute inset-0 flex flex-col items-center justify-center gap-4 bg-[#faf8f3] text-center">
+        <p className="font-display text-[1.8rem] tracking-[0.04em] text-[#1a1208]">
+          그래프를 불러올 수 없습니다
+        </p>
+        <p className="text-[13px] italic tracking-[0.1em] text-[#8b6c42]">
+          3D 그래픽을 지원하지 않는 환경입니다
+        </p>
+        <button
+          onClick={onRestart}
+          className="mt-4 border border-[#c4a882] px-8 py-3 text-[13px] italic tracking-[0.12em] text-[#8b6c42]"
+        >
+          돌아가기
+        </button>
+      </div>
+    );
+  }
 
   return (
     <div
@@ -1046,7 +1264,7 @@ export function IdeaSpace({ onRestart, topic }: IdeaSpaceProps) {
           edges={snapshotEdges}
           memo={workspaceMemo}
           nodes={snapshotNodes}
-          onMemoChange={setWorkspaceMemo}
+          onMemoChange={handleMemoChange}
           onSelectNode={handleMiniMapSelect}
           open={sidebarOpen}
           rootId={seed.rootId}
@@ -1055,11 +1273,15 @@ export function IdeaSpace({ onRestart, topic }: IdeaSpaceProps) {
         />
 
         <NodeInfoPanel
+          aiError={aiError}
+          aiExpanding={aiExpanding}
           canDelete={Boolean(selectedNode && selectedNode.id !== seed.rootId)}
           node={selectedNode}
+          onAIExpand={handleAIExpand}
           onDelete={handleDeleteNode}
           onDescriptionChange={handleDescriptionChange}
           onLabelChange={handleLabelChange}
+          remainingAIUses={remainingAIUses}
           visible={Boolean(selectedNode)}
         />
 

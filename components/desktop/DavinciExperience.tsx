@@ -10,7 +10,9 @@ import {
   useState,
 } from "react";
 import { IntroParticles } from "@/components/desktop/IntroParticles";
-import type { SequenceStage } from "@/types/davinci";
+import { clearGraph, loadGraph } from "@/lib/storage";
+import type { SavedGraph } from "@/lib/storage";
+import type { GraphSeed, SequenceStage } from "@/types/davinci";
 
 const IdeaSpace = dynamic(
   () =>
@@ -36,9 +38,14 @@ export function DavinciExperience({ initialTopic }: DavinciExperienceProps) {
   const [stage, setStage] = useState<SequenceStage>("idle");
   const [runKey, setRunKey] = useState(0);
 
+  const [savedGraph, setSavedGraph] = useState<SavedGraph | null>(loadGraph);
+  const [initialSeed, setInitialSeed] = useState<GraphSeed | undefined>();
+  const [initialMemo, setInitialMemo] = useState<string | undefined>();
+
   const phaseLabel = useMemo(() => PHASE_LABEL[stage] ?? "", [stage]);
   const isGraph = stage === "graph";
   const isRunning = stage !== "idle" && !isGraph;
+  const showRecovery = savedGraph !== null && !isGraph;
 
   const handleIntroComplete = useCallback(() => {
     setStage("graph");
@@ -78,8 +85,27 @@ export function DavinciExperience({ initialTopic }: DavinciExperienceProps) {
       pageRef.current.style.opacity = "1";
     }
 
+    setInitialSeed(undefined);
+    setInitialMemo(undefined);
     setStage("idle");
     setTopicInput(topic);
+  };
+
+  const handleResume = () => {
+    if (!savedGraph) return;
+    setSavedGraph(null);
+    startTransition(() => {
+      setTopic(savedGraph.topic);
+      setTopicInput(savedGraph.topic);
+      setInitialSeed(savedGraph.seed);
+      setInitialMemo(savedGraph.memo);
+      setStage("graph");
+    });
+  };
+
+  const handleFreshStart = () => {
+    clearGraph();
+    setSavedGraph(null);
   };
 
   return (
@@ -96,7 +122,15 @@ export function DavinciExperience({ initialTopic }: DavinciExperienceProps) {
         }}
       />
 
-      {isGraph ? <IdeaSpace key={topic} topic={topic} onRestart={handleRestart} /> : null}
+      {isGraph ? (
+        <IdeaSpace
+          key={topic}
+          topic={topic}
+          onRestart={handleRestart}
+          initialSeed={initialSeed}
+          initialMemo={initialMemo}
+        />
+      ) : null}
 
       <div
         className={`absolute left-1/2 top-5 z-40 -translate-x-1/2 text-[11px] italic tracking-[0.22em] text-[#c4a882] transition-opacity duration-300 ${
@@ -187,6 +221,36 @@ export function DavinciExperience({ initialTopic }: DavinciExperienceProps) {
           onStageChange={setStage}
           onComplete={handleIntroComplete}
         />
+      ) : null}
+
+      {showRecovery && savedGraph && !isGraph ? (
+        <div className="absolute inset-0 z-50 flex items-center justify-center bg-[rgba(250,248,243,0.88)] backdrop-blur-sm">
+          <div className="mx-6 w-full max-w-md border border-[#c4a882] bg-[#faf8f3] px-8 py-7 shadow-lg">
+            <p className="mb-1 text-[11px] italic uppercase tracking-[0.3em] text-[#8b6c42]">
+              이전 작업
+            </p>
+            <p className="mt-2 font-display text-[1.6rem] tracking-[0.04em] text-[#1a1208]">
+              {savedGraph.topic}
+            </p>
+            <p className="mt-1 text-[11px] tracking-[0.1em] text-[#c4a882]">
+              {new Date(savedGraph.savedAt).toLocaleString("ko-KR")} 저장
+            </p>
+            <div className="mt-6 flex gap-3">
+              <button
+                onClick={handleResume}
+                className="flex-1 bg-[#8b6c42] py-3 text-[14px] italic tracking-[0.08em] text-[#faf8f3] transition-colors hover:bg-[#6b4f2f]"
+              >
+                이어하기
+              </button>
+              <button
+                onClick={handleFreshStart}
+                className="flex-1 border border-[#c4a882] py-3 text-[14px] italic tracking-[0.08em] text-[#8b6c42] transition-colors hover:bg-[#f0ebe2]"
+              >
+                새로 시작
+              </button>
+            </div>
+          </div>
+        </div>
       ) : null}
     </section>
   );

@@ -4,11 +4,15 @@ import { useRef } from "react";
 import type { GraphNode } from "@/types/davinci";
 
 type NodeInfoPanelProps = {
+  aiError?: string | null;
+  aiExpanding?: boolean;
   canDelete: boolean;
   node: GraphNode | null;
+  onAIExpand?: () => void;
   onDelete: () => void;
   onDescriptionChange: (value: string) => void;
   onLabelChange: (value: string) => void;
+  remainingAIUses?: number;
   visible: boolean;
 };
 
@@ -21,11 +25,15 @@ const CATEGORY_LABEL = {
 } as const;
 
 export function NodeInfoPanel({
+  aiError,
+  aiExpanding,
   canDelete,
   node,
+  onAIExpand,
   onDelete,
   onDescriptionChange,
   onLabelChange,
+  remainingAIUses,
   visible,
 }: NodeInfoPanelProps) {
   const labelFocusedNodes = useRef(new Set<number>());
@@ -91,6 +99,38 @@ export function NodeInfoPanel({
         className="mt-3 w-full cursor-text resize-none bg-transparent text-[13px] leading-6 tracking-[0.02em] text-[#5d4528] outline-none transition-colors duration-200 placeholder:text-[#d4b896]"
         placeholder="내용을 입력하세요"
       />
+
+      {onAIExpand ? (
+        <div className="mt-4 border-t border-[#e8d5b8] pt-4">
+          {remainingAIUses !== undefined && remainingAIUses > 0 ? (
+            <button
+              type="button"
+              onClick={onAIExpand}
+              disabled={aiExpanding}
+              className="flex w-full items-center justify-between rounded-[0.75rem] border border-[#e8d5b8] px-4 py-2.5 text-[12px] italic tracking-[0.1em] text-[#8b6c42] transition-colors duration-200 hover:border-[#8b6c42] hover:text-[#3d2b12] disabled:cursor-not-allowed disabled:opacity-50"
+            >
+              <span>{aiExpanding ? "확장 중.." : "AI로 아이디어 확장"}</span>
+              {aiExpanding ? (
+                <span className="h-3.5 w-3.5 animate-spin rounded-full border border-[#c4a882] border-t-[#8b6c42]" />
+              ) : (
+                <span className="not-italic text-[10px] tracking-[0.15em] text-[#c4a882]">
+                  {remainingAIUses}/3
+                </span>
+              )}
+            </button>
+          ) : remainingAIUses === 0 ? (
+            <p className="text-center text-[11px] italic tracking-[0.12em] text-[#c4a882]">
+              구독이 필요합니다 (0/3)
+            </p>
+          ) : null}
+
+          {aiError ? (
+            <p className="mt-2 text-[11px] italic tracking-[0.08em] text-[#b86b4b]">
+              {aiError}
+            </p>
+          ) : null}
+        </div>
+      ) : null}
     </div>
   );
 }

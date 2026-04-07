@@ -1,516 +1,237 @@
-# 다빈치노트 — Codex 인계 문서
+# 다빈치노트 Codex Handoff
 
-> **작성일**: 2026-04-06
-> **현재 브랜치**: `main`
-> **상태**: P0 완료 / Phase 1.5 미구현
+기준시각: 2026-04-07
+브랜치: `main`
 
----
+## 1. 현재 상태 요약
 
-## 프로젝트 개요
+다빈치노트는 현재 `수익화 준비 완료` 단계다.
+이번 세션까지 반영된 기준으로는 다음이 동작한다.
 
-Next.js 16.2.1 + React 19 + Three.js 기반 3D 아이디어 그래프 노트 앱.
-사용자가 주제를 입력하면 3D 공간에 노드 그래프가 생성된다. 노드 추가·수정·삭제, 메모 작성, localStorage 자동 저장 구현 완료.
+- Google 로그인
+- 다중 노트 생성/전환
+- 노트별 세션 draft 저장
+- Supabase 클라우드 저장/복구
+- 즐겨찾기 / 보관함
+- 데스크톱 사이드바 + 모바일 드로어 기반 개인 워크스페이스 UI
+- **free / pro 플랜 분기 (quota 시각화, 경고, 업그레이드 CTA)**
+- **Stripe Checkout Session API**
+- **Stripe webhook 핸들러 (결제 성공/변경/취소 반영)**
+- robots / sitemap / manifest / not-found / 정책 페이지
+- Vercel 배포 검증 완료 (이전 세션)
 
-```
-app/
-  layout.tsx          — 루트 레이아웃 (fixed 푸터 포함)
-  page.tsx            — 모바일/데스크톱 분기
-  error.tsx           — 에러 바운더리
-  privacy/page.tsx    — 개인정보처리방침
-  terms/page.tsx      — 이용약관
+현재 판단:
 
-components/
-  desktop/
-    DavinciExperience.tsx   — 데스크톱 진입점 (복구 UI 포함)
-    IdeaSpace.tsx           — Three.js 그래프 (1100+ lines)
-    NodeInfoPanel.tsx       — 선택 노드 편집 패널 (하단 카드)
-    IdeaSidebar.tsx         — 아웃라인 사이드바
-    MiniMapPanel.tsx        — 미니맵
-  mobile/
-    DavinciExperience.tsx   — 모바일 진입점 (복구 UI 포함)
-    IdeaSpace.tsx           — 모바일 Three.js 그래프
-
-lib/
-  graphData.ts        — createGraphSeed, createSpawnedNode, getPaletteForLevel
-  storage.ts          — saveGraph / loadGraph / clearGraph (localStorage)
-
-types/
-  davinci.ts          — GraphNode, GraphEdge, GraphSeed, SequenceStage 등
-```
+- 무료 베타 출시: 가능 (이전 세션 완료)
+- 유료 SaaS 출시: **환경변수 설정 + Stripe 대시보드 Product/Price 생성 후 가능**
 
 ---
 
-## 완료된 작업 (P0)
+## 2. 이번 세션 핵심 완료 항목
 
-| 파일 | 내용 |
-|------|------|
-| `lib/storage.ts` | localStorage 자동 저장/복구 (`davinci_graph_v1`) |
-| `components/desktop/IdeaSpace.tsx` | `initialSeed?`, `initialMemo?` props, WebGL fallback, `persistGraph` |
-| `components/mobile/IdeaSpace.tsx` | 동일 패턴 |
-| `components/desktop/DavinciExperience.tsx` | 이어하기/새로 시작 복구 다이얼로그 |
-| `components/mobile/DavinciExperience.tsx` | 동일 패턴 |
-| `app/error.tsx` | Next.js 에러 바운더리 (한국어) |
-| `app/privacy/page.tsx` | 개인정보처리방침 페이지 |
-| `app/terms/page.tsx` | 이용약관 페이지 |
-| `app/layout.tsx` | fixed 푸터 (pointer-events-none, 캔버스 이벤트 방해 없음) |
+### Phase 1: free / pro 분기 구현
 
----
+- `lib/aiUsage.ts`
+  - `PLAN_QUOTAS = { free: 3, pro: 50 }` 추가
+  - `getQuotaForPlan(plan)` / `isPro(profile)` / `getQuotaPercent(profile)` / `isQuotaLow(profile)` / `isQuotaExhausted(profile)` 헬퍼 추가
+- `lib/cloudStorage.ts`
+  - `WorkspaceProfile` 타입에 Stripe 필드 5개 추가
+  - `ensureProfileInCloud()` ai_quota 기본값을 `getQuotaForPlan('free')`로 변경
+  - select 절에 신규 Stripe 필드 포함
+- `app/api/ai-expand/route.ts`
+  - `DEFAULT_FREE_QUOTA` 하드코딩 → `getQuotaForPlan(DEFAULT_FREE_PLAN)` 으로 변경
+  - select 절에 Stripe 필드 포함
+- `components/desktop/IdeaSidebar.tsx`
+  - progress bar 추가 (사용 비율 시각화)
+  - quota 소진 시 경고 스타일 + 업그레이드 CTA 버튼
+  - quota 낮을 때(≤1) 인라인 업그레이드 링크
+  - PRO 배지 스타일 분기
+  - `onUpgradeClick` prop 추가
+- `components/mobile/SideDrawer.tsx`
+  - 동일한 progress bar / 경고 / CTA 적용
+  - `onUpgradeClick` prop 추가
+- `components/desktop/IdeaSpace.tsx` / `components/mobile/IdeaSpace.tsx`
+  - `onUpgradeClick` prop 추가 → IdeaSidebar/SideDrawer로 전달
+- `components/desktop/DavinciExperience.tsx` / `components/mobile/DavinciExperience.tsx`
+  - `onUpgradeClick` prop 추가 → IdeaSpace로 전달
+- `lib/auth.ts`
+  - `getAccessToken()` 헬퍼 추가 (Supabase session access token 반환)
+- `app/page.tsx`
+  - `handleUpgradeClick` 추가 (Checkout API 호출 → `window.location.href` 리다이렉트)
+  - `sharedProps`에 `onUpgradeClick` 포함
 
-## 미구현 작업 — Phase 1.5: AI 아이디어 확장
+### Phase 2: Billing-Ready Schema
 
-### 목표
-선택된 노드 기준으로 AI가 하위 아이디어 3~5개를 제안 → 자동으로 자식 노드로 추가.
-무료 3회 제한 후 "구독이 필요합니다" 메시지 표시.
+- `supabase/graphs.sql`
+  - profiles 테이블에 `alter table ... add column if not exists` 추가:
+    - `stripe_customer_id text`
+    - `stripe_subscription_id text`
+    - `current_period_end timestamptz`
+    - `cancel_at_period_end boolean not null default false`
+    - `stripe_status text`
+- `types/supabase.ts`
+  - profiles Row/Insert/Update 타입에 신규 5개 필드 추가
 
-### 배포 변경
-현재 `next.config.ts`에 GitHub Pages 정적 배포 설정(`output: "export"`)이 있어 API 라우트 사용 불가.
-**Vercel로 전환하므로 해당 설정 제거 필요.**
+### Phase 3: Stripe 설치 및 서버 유틸
 
----
+- `stripe@22` npm 패키지 설치
+- `lib/stripeServer.ts` 생성 (lazy init, `getStripe()` 팩토리)
+- `lib/supabaseAdmin.ts` 생성 (service role 클라이언트, lazy init, `getSupabaseAdmin()` 팩토리)
 
-## 구현 명세
+### Phase 4: Stripe Checkout API
 
-### 1단계: 패키지 설치
+- `app/api/stripe/checkout/route.ts` 생성
+  - Bearer 토큰 인증
+  - stripe_customer_id 재사용 / 신규 생성 후 profiles 저장
+  - Checkout Session 생성 → `{ url }` 반환
 
-```bash
-npm install openai
-```
+### Phase 5: Stripe Webhook
 
----
-
-### 2단계: `next.config.ts` 수정
-
-```typescript
-// 변경 전
-const isProd = process.env.GITHUB_ACTIONS === "true";
-const nextConfig: NextConfig = {
-  ...(isProd && { output: "export", basePath: "/Davinci" }),
-  images: { unoptimized: true },
-};
-
-// 변경 후
-const nextConfig: NextConfig = {
-  images: { unoptimized: true },
-};
-export default nextConfig;
-```
-
----
-
-### 3단계: `lib/aiUsage.ts` 신규 생성
-
-`lib/storage.ts`와 동일한 try/catch 패턴 사용.
-
-```typescript
-const KEY = "davinci_ai_uses";
-const FREE_LIMIT = 3;
-
-export function getAIUsageCount(): number {
-  try {
-    const raw = localStorage.getItem(KEY);
-    if (!raw) return 0;
-    const count = parseInt(raw, 10);
-    return Number.isNaN(count) ? 0 : count;
-  } catch {
-    return 0;
-  }
-}
-
-export function hasRemainingAIUsage(): boolean {
-  return getAIUsageCount() < FREE_LIMIT;
-}
-
-export function incrementAIUsageCount(): void {
-  try {
-    localStorage.setItem(KEY, String(getAIUsageCount() + 1));
-  } catch {
-    // quota exceeded — 무시
-  }
-}
-
-export function getRemainingAIUses(): number {
-  return Math.max(0, FREE_LIMIT - getAIUsageCount());
-}
-```
+- `app/api/stripe/webhook/route.ts` 생성
+  - `stripe.webhooks.constructEvent` 로 서명 검증
+  - `checkout.session.completed` → plan='pro', ai_quota=50
+  - `customer.subscription.updated` → current_period_end, cancel_at_period_end, stripe_status 동기화
+  - `customer.subscription.deleted` → plan='free', ai_quota=3 다운그레이드
+  - `getSupabaseAdmin()` (service role) 사용
 
 ---
 
-### 4단계: `app/api/ai-expand/route.ts` 신규 생성
+## 3. 현재 DB 구조
 
-```typescript
-import OpenAI from "openai";
-import { NextResponse } from "next/server";
+### profiles
 
-type ExpandRequest = {
-  nodeLabel: string;
-  nodeDescription: string;
-  topic: string;
-  existingLabels: string[];
-};
+- `user_id uuid primary key references auth.users(id)`
+- `plan text default 'free'`
+- `subscription_status text default 'inactive'`
+- `ai_quota integer default 3`
+- `ai_used integer default 0`
+- `quota_period_start timestamptz`
+- `quota_period_end timestamptz`
+- `stripe_customer_id text` ← 신규
+- `stripe_subscription_id text` ← 신규
+- `current_period_end timestamptz` ← 신규
+- `cancel_at_period_end boolean default false` ← 신규
+- `stripe_status text` ← 신규
 
-type IdeaSuggestion = {
-  label: string;
-  description: string;
-};
+### graphs
 
-export async function POST(request: Request) {
-  if (!process.env.OPENAI_API_KEY) {
-    return NextResponse.json(
-      { error: "OPENAI_API_KEY 환경 변수가 설정되지 않았습니다." },
-      { status: 500 },
-    );
-  }
-
-  let body: ExpandRequest;
-  try {
-    body = (await request.json()) as ExpandRequest;
-  } catch {
-    return NextResponse.json({ error: "잘못된 요청 형식" }, { status: 400 });
-  }
-
-  const { nodeLabel, nodeDescription, topic, existingLabels } = body;
-
-  const userPrompt = `다음 노드에 연결할 하위 아이디어 3~5개를 제안해주세요.
-
-전체 주제: ${topic}
-현재 노드 제목: ${nodeLabel}
-현재 노드 설명: ${nodeDescription || "(없음)"}
-이미 있는 노드 목록: ${existingLabels.join(", ") || "(없음)"}
-
-조건:
-- 각 아이디어의 제목(label)은 최대 10자 이내
-- 각 아이디어의 설명(description)은 최대 80자 이내
-- 이미 있는 노드 목록과 중복되지 않을 것
-- 한국어로 작성
-
-다음 JSON 형식으로만 응답하세요:
-{"ideas":[{"label":"제목","description":"설명"},{"label":"제목","description":"설명"}]}`;
-
-  try {
-    const client = new OpenAI({ apiKey: process.env.OPENAI_API_KEY });
-    const response = await client.responses.create({
-      model: process.env.OPENAI_MODEL || "gpt-5-nano",
-      max_output_tokens: 512,
-      instructions:
-        "당신은 아이디어 브레인스토밍 전문가입니다. 반드시 JSON 형식만 출력하고 다른 텍스트는 포함하지 마세요.",
-      input: userPrompt,
-    });
-
-    const rawText = response.output_text.trim();
-
-    if (!rawText) {
-      return NextResponse.json({ error: "AI 응답 형식 오류" }, { status: 500 });
-    }
-
-    let parsed: { ideas: IdeaSuggestion[] };
-    try {
-      parsed = JSON.parse(rawText) as { ideas: IdeaSuggestion[] };
-    } catch {
-      return NextResponse.json({ error: "AI 응답 파싱 실패" }, { status: 500 });
-    }
-
-    if (!Array.isArray(parsed.ideas)) {
-      return NextResponse.json({ error: "AI 응답 구조 오류" }, { status: 500 });
-    }
-
-    const ideas = parsed.ideas
-      .filter(
-        (i) => typeof i.label === "string" && typeof i.description === "string",
-      )
-      .map((i) => ({
-        label: i.label.slice(0, 10),
-        description: i.description.slice(0, 80),
-      }))
-      .slice(0, 5);
-
-    return NextResponse.json({ ideas });
-  } catch (error) {
-    const msg = error instanceof Error ? error.message : "알 수 없는 오류";
-    return NextResponse.json({ error: msg }, { status: 500 });
-  }
-}
-```
+(이전 세션과 동일 — 변경 없음)
 
 ---
 
-### 5단계: `components/desktop/IdeaSpace.tsx` 수정
+## 4. 현재 중요한 파일
 
-#### 5-1. import 추가 (파일 상단)
-```typescript
-import {
-  getRemainingAIUses,
-  hasRemainingAIUsage,
-  incrementAIUsageCount,
-} from "@/lib/aiUsage";
-```
+### 워크스페이스 / 진입
 
-#### 5-2. GraphApi 타입 확장 (파일 상단의 로컬 타입)
-```typescript
-type GraphApi = {
-  deleteSelectedNode: () => void;
-  selectNode: (id: number) => void;
-  spawnMultipleNodes: (
-    parentId: number,
-    ideas: { label: string; description: string }[],
-  ) => void;
-  spawnNode: (parentId: number) => void;
-  updateNode: (id: number, patch: Pick<GraphNode, "description" | "label">) => void;
-};
-```
+- `E:\Claude\Davinci\app\page.tsx`
+- `E:\Claude\Davinci\components\desktop\DavinciExperience.tsx`
+- `E:\Claude\Davinci\components\mobile\DavinciExperience.tsx`
 
-#### 5-3. React state 추가 (기존 useState 블록 맨 끝에 추가)
-```typescript
-const [aiExpanding, setAIExpanding] = useState(false);
-const [remainingAIUses, setRemainingAIUses] = useState(() =>
-  getRemainingAIUses(),
-);
-```
+### 저장 / 클라우드
 
-#### 5-4. `spawnMultipleNodes` 함수 추가 (useEffect 내부, `spawnNode` 함수 바로 아래)
+- `E:\Claude\Davinci\lib\storage.ts`
+- `E:\Claude\Davinci\lib\cloudStorage.ts`
+- `E:\Claude\Davinci\lib\supabase.ts`
+- `E:\Claude\Davinci\lib\supabaseServer.ts`
+- `E:\Claude\Davinci\lib\supabaseAdmin.ts` ← 신규
+- `E:\Claude\Davinci\supabase\graphs.sql`
+- `E:\Claude\Davinci\types\supabase.ts`
 
-```typescript
-const spawnMultipleNodes = (
-  parentId: number,
-  ideas: { label: string; description: string }[],
-) => {
-  const parent = nodeMap.get(parentId);
-  if (!parent || ideas.length === 0) return;
+### AI
 
-  let siblingCount = edges.filter(([from]) => from === parentId).length;
-  const spawnedIds: number[] = [];
+- `E:\Claude\Davinci\app\api\ai-expand\route.ts`
+- `E:\Claude\Davinci\lib\aiUsage.ts`
 
-  for (const idea of ideas) {
-    const node = createSpawnedNode(idea.label, nextId, parent, siblingCount);
-    node.description = idea.description;
-    const runtimeNode: RuntimeNode = {
-      ...node,
-      bornAt: performance.now() + spawnedIds.length * 80,
-    };
-    nextId += 1;
-    siblingCount += 1;
-    nodes.push(runtimeNode);
-    nodeMap.set(runtimeNode.id, runtimeNode);
-    edges.push([parentId, runtimeNode.id]);
-    makeNode(runtimeNode, true);
-    makeEdge(parentId, runtimeNode.id, true);
-    spawnedIds.push(runtimeNode.id);
-  }
+### Stripe
 
-  if (spawnedIds[0] !== undefined) setSelected(spawnedIds[0]);
-  persistGraph();
-};
-```
+- `E:\Claude\Davinci\lib\stripeServer.ts` ← 신규
+- `E:\Claude\Davinci\app\api\stripe\checkout\route.ts` ← 신규
+- `E:\Claude\Davinci\app\api\stripe\webhook\route.ts` ← 신규
 
-> `bornAt` 80ms 스태거: 노드가 순차적으로 등장하는 시각 효과.
-> `setSelected`는 루프 밖에서 한 번만 호출 (React re-render 최소화).
+### 워크스페이스 UI
 
-#### 5-5. `graphApiRef.current` 할당부에 `spawnMultipleNodes` 추가
-기존 `graphApiRef.current = { spawnNode, selectNode: setSelected, updateNode, deleteSelectedNode }` 에 `spawnMultipleNodes` 추가.
-
-#### 5-6. `handleAIExpand` 함수 추가 (useEffect 외부, `handleDescriptionChange` 뒤에)
-
-```typescript
-const handleAIExpand = async () => {
-  if (!selectedNode || aiExpanding || !hasRemainingAIUsage()) return;
-
-  setAIExpanding(true);
-  try {
-    const res = await fetch("/api/ai-expand", {
-      method: "POST",
-      headers: { "Content-Type": "application/json" },
-      body: JSON.stringify({
-        nodeLabel: selectedNode.label,
-        nodeDescription: selectedNode.description,
-        topic,
-        existingLabels: snapshotNodes.map((n) => n.label),
-      }),
-    });
-
-    if (!res.ok) throw new Error("AI 요청 실패");
-
-    const { ideas } = (await res.json()) as {
-      ideas: { label: string; description: string }[];
-    };
-
-    if (Array.isArray(ideas) && ideas.length > 0) {
-      graphApiRef.current?.spawnMultipleNodes(selectedNode.id, ideas);
-      incrementAIUsageCount();
-      setRemainingAIUses(getRemainingAIUses());
-    }
-  } catch (err) {
-    console.error("[AI Expand]", err);
-  } finally {
-    setAIExpanding(false);
-  }
-};
-```
-
-#### 5-7. NodeInfoPanel JSX에 props 추가
-```tsx
-<NodeInfoPanel
-  aiExpanding={aiExpanding}
-  canDelete={Boolean(selectedNode && selectedNode.id !== seed.rootId)}
-  node={selectedNode}
-  onAIExpand={handleAIExpand}
-  onDelete={handleDeleteNode}
-  onDescriptionChange={handleDescriptionChange}
-  onLabelChange={handleLabelChange}
-  remainingAIUses={remainingAIUses}
-  visible={Boolean(selectedNode)}
-/>
-```
+- `E:\Claude\Davinci\components\desktop\IdeaSpace.tsx`
+- `E:\Claude\Davinci\components\mobile\IdeaSpace.tsx`
+- `E:\Claude\Davinci\components\desktop\IdeaSidebar.tsx`
+- `E:\Claude\Davinci\components\mobile\SideDrawer.tsx`
 
 ---
 
-### 6단계: `components/desktop/NodeInfoPanel.tsx` 수정
+## 5. 검증 상태
 
-#### 6-1. Props 타입 확장
+이번 세션 마지막 검증:
 
-```typescript
-type NodeInfoPanelProps = {
-  aiExpanding?: boolean;
-  canDelete: boolean;
-  node: GraphNode | null;
-  onAIExpand?: () => void;
-  onDelete: () => void;
-  onDescriptionChange: (value: string) => void;
-  onLabelChange: (value: string) => void;
-  remainingAIUses?: number;
-  visible: boolean;
-};
-```
+- `npx tsc --noEmit` ✅
+- `npm run build` ✅
 
-함수 시그니처도 업데이트:
-```typescript
-export function NodeInfoPanel({
-  aiExpanding,
-  canDelete,
-  node,
-  onAIExpand,
-  onDelete,
-  onDescriptionChange,
-  onLabelChange,
-  remainingAIUses,
-  visible,
-}: NodeInfoPanelProps)
-```
+사용자 수동 검증 필요:
 
-#### 6-2. AI 버튼 UI 추가 (description `</textarea>` 바로 아래, 카드 닫기 `</div>` 전)
-
-```tsx
-{onAIExpand !== undefined && (
-  <div className="mt-4 border-t border-[#e8d5b8] pt-4">
-    {remainingAIUses !== undefined && remainingAIUses > 0 ? (
-      <button
-        type="button"
-        onClick={onAIExpand}
-        disabled={aiExpanding}
-        className="flex w-full items-center justify-between rounded-[0.75rem] border border-[#e8d5b8] px-4 py-2.5 text-[12px] italic tracking-[0.1em] text-[#8b6c42] transition-colors duration-200 hover:border-[#8b6c42] hover:text-[#3d2b12] disabled:cursor-not-allowed disabled:opacity-50"
-      >
-        <span>{aiExpanding ? "확장 중..." : "AI로 아이디어 확장"}</span>
-        {!aiExpanding && (
-          <span className="not-italic text-[10px] tracking-[0.15em] text-[#c4a882]">
-            {remainingAIUses}/3
-          </span>
-        )}
-        {aiExpanding && (
-          <span className="h-3.5 w-3.5 animate-spin rounded-full border border-[#c4a882] border-t-[#8b6c42]" />
-        )}
-      </button>
-    ) : remainingAIUses === 0 ? (
-      <p className="text-center text-[11px] italic tracking-[0.12em] text-[#c4a882]">
-        구독이 필요합니다 (0/3)
-      </p>
-    ) : null}
-  </div>
-)}
-```
+- DB: `supabase/graphs.sql` 에 추가된 `alter table` 실행
+- Stripe 대시보드에서 Product/Price 생성 → `STRIPE_PRO_PRICE_ID` 설정
+- Vercel에 신규 환경변수 설정 후 재배포
+- `stripe listen --forward-to localhost:3000/api/stripe/webhook` 로 로컬 webhook 테스트
+- 테스트 카드(4242 4242 4242 4242)로 결제 → profile plan='pro', ai_quota=50 확인
 
 ---
 
-### 7단계: `components/mobile/IdeaSpace.tsx` 수정
+## 6. 환경변수 현황
 
-5단계와 동일한 변경을 모바일 파일에 적용.
+### 기존 (이전 세션)
 
-- **GraphApi 타입**: `spawnMultipleNodes` 추가 (모바일 파일에도 로컬 타입 존재)
-- **`spawnMultipleNodes`**: useEffect 내부, `spawnNode` 바로 아래에 동일하게 구현
-- **`graphApiRef` 할당**: `spawnMultipleNodes` 추가
-- **state**: `aiExpanding`, `remainingAIUses` 추가
-- **`handleAIExpand`**: `handleDescriptionChange` 뒤에 동일하게 추가
-- **인라인 바텀시트 JSX**: description `</textarea>` 아래에 버튼 삽입
+- `NEXT_PUBLIC_SUPABASE_URL`
+- `NEXT_PUBLIC_SUPABASE_ANON_KEY` (또는 `NEXT_PUBLIC_SUPABASE_PUBLISHABLE_DEFAULT_KEY`)
+- `OPENAI_API_KEY`
+- `OPENAI_MODEL`
+- `NEXT_PUBLIC_BASE_URL`
 
-```tsx
-{/* AI 확장 버튼 — description textarea 아래 */}
-<div className="mt-4 border-t border-[#e8d5b8] pt-4">
-  {remainingAIUses > 0 ? (
-    <button
-      type="button"
-      onClick={handleAIExpand}
-      disabled={aiExpanding}
-      className="flex w-full items-center justify-between rounded-[0.75rem] border border-[#e8d5b8] px-4 py-3 text-[13px] italic tracking-[0.1em] text-[#8b6c42] disabled:opacity-50"
-    >
-      <span>{aiExpanding ? "확장 중..." : "AI로 아이디어 확장"}</span>
-      {!aiExpanding && (
-        <span className="not-italic text-[11px] tracking-[0.15em] text-[#c4a882]">
-          {remainingAIUses}/3
-        </span>
-      )}
-      {aiExpanding && (
-        <span className="h-3.5 w-3.5 animate-spin rounded-full border border-[#c4a882] border-t-[#8b6c42]" />
-      )}
-    </button>
-  ) : (
-    <p className="text-center text-[12px] italic tracking-[0.12em] text-[#c4a882]">
-      구독이 필요합니다 (0/3)
-    </p>
-  )}
-</div>
-```
+### 신규 추가 필요
 
-**조이스틱 bottom offset 조정** (버튼 공간 확보):
-```tsx
-// 변경 전
-bottom: panelOpen ? 220 : 40
-
-// 변경 후
-bottom: panelOpen ? 270 : 40
-```
+- `STRIPE_SECRET_KEY` — Stripe 대시보드 > API keys
+- `STRIPE_WEBHOOK_SECRET` — `stripe listen` 또는 Stripe 대시보드 Webhook endpoint secret
+- `STRIPE_PRO_PRICE_ID` — Stripe 대시보드에서 생성한 Price ID
+- `SUPABASE_SERVICE_ROLE_KEY` — Supabase 대시보드 > Settings > API > service_role key
 
 ---
 
-## 환경 변수
+## 7. 지금 남아 있는 리스크
 
-### 로컬 개발 (`.env.local` — gitignore 필수)
-```
-OPENAI_API_KEY=sk-...
-OPENAI_MODEL=gpt-5-nano
-```
+### 환경변수 미설정
 
-### Vercel 배포
-대시보드 → Settings → Environment Variables:
-```
-OPENAI_API_KEY = sk-...
-OPENAI_MODEL = gpt-5-nano
-```
+- Vercel에 신규 env var 4개 미설정 시 Stripe 기능 전체 비활성
+- `SUPABASE_SERVICE_ROLE_KEY` 미설정 시 webhook DB 업데이트 실패
 
----
+### 운영
 
-## 검증 체크리스트
+- Sentry/PostHog 등 운영 가시성 없음
+- AI 비용 로그/usage ledger 없음
 
-- [ ] 노드 선택 → NodeInfoPanel 하단에 "AI로 아이디어 확장 [3/3]" 버튼 표시
-- [ ] 버튼 클릭 → "확장 중..." + 스피너 표시
-- [ ] AI 응답 후 자식 노드 3~5개 순차 생성 (80ms 스태거 애니메이션)
-- [ ] 3회 사용 후 → "구독이 필요합니다 (0/3)" 텍스트로 교체
-- [ ] 새로고침 후 사용 횟수 유지 (localStorage `davinci_ai_uses`)
-- [ ] `OPENAI_API_KEY` 미설정 → 서버 500, 클라이언트 console.error, 카운트 미증가
-- [ ] 모바일 바텀시트에도 동일 버튼 표시 및 동작
-- [ ] `next build` + `npx tsc --noEmit` + `npx eslint` 모두 통과
+### UX
+
+- 업그레이드 성공 후 toast 등 피드백 UI 미구현 (url 쿼리 `?upgrade=success` 는 준비됐지만 UI 처리 없음)
+- billing portal (구독 취소/관리) 없음
 
 ---
 
-## 주의사항
+## 8. 다음 작업 우선순위
 
-1. **`createSpawnedNode`** (`lib/graphData.ts:41`) 은 `description: ""` 반환 → 루프 안에서 `node.description = idea.description` 으로 직접 덮어씀
-2. **`persistGraph`** 는 이미 useEffect 클로저 안에 정의되어 있음 → `spawnMultipleNodes` 끝에서 호출
-3. **ESLint `react-hooks/exhaustive-deps`**: `useEffect` 의존성 배열 `[seed]` 에 `// eslint-disable-next-line react-hooks/exhaustive-deps` 주석 이미 추가되어 있음 — 새 함수 추가 시 동일 패턴 유지
-4. **`output: "export"` 제거** 후 GitHub Actions 배포 워크플로우(`/.github/workflows/`)가 있다면 해당 파일도 비활성화 또는 삭제 필요
+### P0: 배포 전 필수
+
+1. Supabase SQL 실행 (신규 Stripe 필드 alter table)
+2. Stripe 대시보드 Product/Price 생성
+3. Vercel 신규 환경변수 4개 설정 후 재배포
+4. 실제 결제 흐름 수동 검증
+
+### P1: 업그레이드 UX 완성
+
+5. `?upgrade=success` 감지 → toast/배너 표시 (`app/page.tsx`)
+6. billing portal 링크 추가 (구독 취소/재개)
+
+### P2: 운영 가시성
+
+7. Sentry 또는 동등 에러 추적
+8. PostHog 또는 동등 분석 도구
+
+### P3: 추가 수익화
+
+9. 연간 플랜 추가 (Stripe Price 추가)
+10. 가격/플랜 랜딩 페이지 개선

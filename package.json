@@ -11,11 +11,15 @@
   "dependencies": {
     "@react-three/drei": "^10.7.7",
     "@react-three/fiber": "^9.5.0",
+    "@sentry/nextjs": "^10.47.0",
+    "@supabase/supabase-js": "^2.101.1",
     "framer-motion": "^12.38.0",
     "next": "16.2.1",
     "openai": "^6.33.0",
+    "posthog-js": "^1.364.7",
     "react": "19.2.4",
     "react-dom": "19.2.4",
+    "stripe": "^22.0.0",
     "three": "^0.182.0"
   },
   "devDependencies": {

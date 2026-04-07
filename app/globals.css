@@ -44,3 +44,9 @@ select {
   background: rgba(196, 168, 130, 0.24);
   color: #1a1208;
 }
+
+:focus-visible {
+  outline: 2px solid #8b6c42;
+  outline-offset: 2px;
+  border-radius: 4px;
+}

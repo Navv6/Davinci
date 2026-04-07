@@ -1,10 +1,24 @@
 import OpenAI from "openai";
 import { NextResponse } from "next/server";
+import { captureServerException } from "@/lib/observability/sentry";
+import {
+  DEFAULT_FREE_PLAN,
+  getEffectivePlan,
+  getEffectiveQuota,
+  getEffectiveAIUsed,
+  getQuotaForPlan,
+  getQuotaWindow,
+  getRemainingAIUses,
+  shouldResetQuota,
+} from "@/lib/aiUsage";
+import { extractOutlineLabels } from "@/lib/outline";
+import { createSupabaseServerClient } from "@/lib/supabaseServer";
+import type { WorkspaceProfile } from "@/lib/cloudStorage";
 
 type ExpandRequest = {
-  existingLabels: string[];
   nodeDescription: string;
   nodeLabel: string;
+  outlineText: string;
   topic: string;
 };
 
@@ -13,27 +27,21 @@ type IdeaSuggestion = {
   label: string;
 };
 
+type ParsedIdeaPayload = {
+  ideas?: IdeaSuggestion[];
+};
+
 const MODEL = process.env.OPENAI_MODEL || "gpt-5-nano";
 
 function normalizeLabel(value: string) {
   return value.trim().toLocaleLowerCase("ko-KR");
 }
 
-function parseIdeas(rawText: string, existingLabels: string[]) {
+function sanitizeIdeas(ideas: IdeaSuggestion[], existingLabels: string[]) {
   const existing = new Set(existingLabels.map(normalizeLabel));
   const seen = new Set<string>();
-  const trimmed = rawText
-    .replace(/^```json\s*/i, "")
-    .replace(/^```\s*/i, "")
-    .replace(/\s*```$/, "")
-    .trim();
 
-  const parsed = JSON.parse(trimmed) as { ideas?: IdeaSuggestion[] };
-  if (!Array.isArray(parsed.ideas)) {
-    throw new Error("AI response did not include an ideas array.");
-  }
-
-  return parsed.ideas
+  return ideas
     .filter(
       (idea) =>
         typeof idea?.label === "string" && typeof idea?.description === "string",
@@ -45,6 +53,7 @@ function parseIdeas(rawText: string, existingLabels: string[]) {
     .filter((idea) => idea.label.length > 0)
     .filter((idea) => {
       const key = normalizeLabel(idea.label);
+
       if (existing.has(key) || seen.has(key)) {
         return false;
       }
@@ -55,74 +64,266 @@ function parseIdeas(rawText: string, existingLabels: string[]) {
     .slice(0, 5);
 }
 
+async function loadProfile(
+  token: string,
+  userId: string,
+): Promise<WorkspaceProfile | null> {
+  const supabase = createSupabaseServerClient(token);
+  const quotaWindow = getQuotaWindow();
+
+  await supabase.from("profiles").upsert(
+    {
+      user_id: userId,
+      plan: DEFAULT_FREE_PLAN,
+      subscription_status: "inactive",
+      ai_quota: getQuotaForPlan(DEFAULT_FREE_PLAN),
+      ai_used: 0,
+      updated_at: new Date().toISOString(),
+      ...quotaWindow,
+    },
+    { onConflict: "user_id", ignoreDuplicates: true },
+  );
+
+  const { data, error } = await supabase
+    .from("profiles")
+    .select(
+      "ai_quota, ai_used, cancel_at_period_end, created_at, current_period_end, plan, pro_expires_at, quota_period_end, quota_period_start, stripe_customer_id, stripe_status, stripe_subscription_id, subscription_status, updated_at, user_id",
+    )
+    .eq("user_id", userId)
+    .maybeSingle();
+
+  if (error) {
+    console.warn("[AI Expand Profile Load]", error.message);
+    return null;
+  }
+
+  return data;
+}
+
+async function upsertUsage(
+  token: string,
+  profile: WorkspaceProfile,
+  nextUsed: number,
+) {
+  const supabase = createSupabaseServerClient(token);
+  const nextWindow = shouldResetQuota(profile) ? getQuotaWindow() : null;
+
+  await supabase.from("profiles").upsert(
+    {
+      user_id: profile.user_id,
+      plan: profile.plan,
+      subscription_status: profile.subscription_status,
+      ai_quota: getEffectiveQuota(profile),
+      ai_used: nextUsed,
+      pro_expires_at: profile.pro_expires_at,
+      updated_at: new Date().toISOString(),
+      quota_period_start:
+        nextWindow?.quota_period_start ?? profile.quota_period_start,
+      quota_period_end: nextWindow?.quota_period_end ?? profile.quota_period_end,
+    },
+    { onConflict: "user_id" },
+  );
+}
+
 export async function POST(request: Request) {
-  if (!process.env.OPENAI_API_KEY) {
+  const authHeader = request.headers.get("Authorization");
+  const token = authHeader?.startsWith("Bearer ") ? authHeader.slice(7) : null;
+
+  if (!token) {
     return NextResponse.json(
-      { error: "OPENAI_API_KEY 환경 변수가 설정되지 않았습니다." },
+      { error: "Authentication required." },
+      { status: 401 },
+    );
+  }
+
+  let userId: string;
+
+  try {
+    const supabase = createSupabaseServerClient(token);
+    const { data, error } = await supabase.auth.getUser();
+
+    if (error || !data.user) {
+      return NextResponse.json(
+        { error: "Invalid or expired session." },
+        { status: 401 },
+      );
+    }
+
+    userId = data.user.id;
+  } catch {
+    return NextResponse.json(
+      { error: "Authentication check failed." },
+      { status: 401 },
+    );
+  }
+
+  if (!process.env.OPENAI_API_KEY) {
+    captureServerException(new Error("AI expand requested without OpenAI API key."), {
+      tags: { route: "ai_expand" },
+      user: { id: userId },
+    });
+
+    return NextResponse.json(
+      { error: "OPENAI_API_KEY is not configured." },
       { status: 500 },
     );
   }
 
   let body: ExpandRequest;
+
   try {
     body = (await request.json()) as ExpandRequest;
   } catch {
-    return NextResponse.json({ error: "잘못된 요청 형식입니다." }, { status: 400 });
+    return NextResponse.json({ error: "Invalid request body." }, { status: 400 });
   }
 
-  const { existingLabels, nodeDescription, nodeLabel, topic } = body;
+  const { nodeDescription, nodeLabel, outlineText, topic } = body;
+
   if (
     typeof topic !== "string" ||
     typeof nodeLabel !== "string" ||
     typeof nodeDescription !== "string" ||
-    !Array.isArray(existingLabels) ||
-    existingLabels.some((label) => typeof label !== "string")
+    typeof outlineText !== "string"
   ) {
-    return NextResponse.json({ error: "잘못된 요청 형식입니다." }, { status: 400 });
+    return NextResponse.json({ error: "Invalid request body." }, { status: 400 });
   }
 
-  const userPrompt = `다음 노드와 연결될 하위 아이디어 3~5개를 제안해주세요.
+  const profile = await loadProfile(token, userId);
 
-전체 주제: ${topic}
-현재 노드 제목: ${nodeLabel}
-현재 노드 설명: ${nodeDescription || "(없음)"}
-이미 있는 노드 목록: ${existingLabels.join(", ") || "(없음)"}
+  if (!profile) {
+    captureServerException(new Error("Failed to load usage profile."), {
+      tags: { route: "ai_expand" },
+      user: { id: userId },
+    });
 
-조건:
-- 각 아이디어의 제목(label)은 최대 10자 이내
-- 각 아이디어의 설명(description)은 최대 80자 이내
-- 이미 있는 노드 목록과 중복되지 않을 것
-- 한국어로 작성
+    return NextResponse.json(
+      { error: "Failed to load usage profile." },
+      { status: 500 },
+    );
+  }
 
-다음 JSON 형식으로만 응답하세요:
-{"ideas":[{"label":"제목","description":"설명"}]}`;
+  if (getRemainingAIUses(profile) <= 0) {
+    return NextResponse.json({ error: "quota_exceeded" }, { status: 429 });
+  }
+
+  const existingLabels = extractOutlineLabels(outlineText);
+  const prompt = [
+    "Suggest 3 to 5 child ideas for the selected node.",
+    "Respond in Korean.",
+    "Return JSON only in this format: {\"ideas\":[{\"label\":\"...\",\"description\":\"...\"}]}",
+    "Each label must be 10 characters or fewer.",
+    "Each description must be 80 characters or fewer.",
+    "Do not repeat labels that already exist in the outline.",
+    "",
+    `Topic: ${topic}`,
+    `Selected node label: ${nodeLabel}`,
+    `Selected node description: ${nodeDescription || "(none)"}`,
+    "Full node outline:",
+    outlineText || "(none)",
+  ].join("\n");
 
   try {
     const client = new OpenAI({ apiKey: process.env.OPENAI_API_KEY });
-    const response = await client.responses.create({
+    const response = await client.chat.completions.create({
       model: MODEL,
-      max_output_tokens: 512,
-      instructions:
-        "당신은 아이디어 브레인스토밍 보조 전문가입니다. 반드시 JSON 형식만 출력하고 다른 텍스트는 포함하지 마세요.",
-      input: userPrompt,
+      messages: [
+        {
+          role: "system",
+          content:
+            "You expand idea maps. Output valid JSON only, with no markdown fences or extra text.",
+        },
+        {
+          role: "user",
+          content: prompt,
+        },
+      ],
+      response_format: {
+        type: "json_schema",
+        json_schema: {
+          name: "idea_suggestions",
+          strict: true,
+          schema: {
+            type: "object",
+            additionalProperties: false,
+            properties: {
+              ideas: {
+                type: "array",
+                items: {
+                  type: "object",
+                  additionalProperties: false,
+                  properties: {
+                    label: { type: "string" },
+                    description: { type: "string" },
+                  },
+                  required: ["label", "description"],
+                },
+              },
+            },
+            required: ["ideas"],
+          },
+        },
+      },
     });
-    const rawText = response.output_text.trim();
 
-    if (!rawText) {
-      return NextResponse.json({ error: "AI 응답 형식 오류" }, { status: 500 });
+    const parsedText = response.choices[0]?.message?.content?.trim();
+
+    if (!parsedText) {
+      return NextResponse.json(
+        { error: "AI returned an empty response." },
+        { status: 500 },
+      );
     }
 
     let ideas: IdeaSuggestion[];
+
     try {
-      ideas = parseIdeas(rawText, existingLabels);
+      const json = JSON.parse(parsedText) as ParsedIdeaPayload;
+
+      if (!Array.isArray(json.ideas)) {
+        throw new Error("Missing ideas array.");
+      }
+
+      ideas = sanitizeIdeas(json.ideas, existingLabels);
     } catch {
-      return NextResponse.json({ error: "AI 응답 파싱 실패" }, { status: 500 });
+      captureServerException(new Error("Failed to parse AI response."), {
+        tags: { route: "ai_expand" },
+        user: { id: userId },
+        contexts: {
+          ai_expand: {
+            model: MODEL,
+            node_label: nodeLabel,
+          },
+        },
+      });
+
+      return NextResponse.json(
+        { error: "Failed to parse AI response." },
+        { status: 500 },
+      );
+    }
+
+    if (ideas.length > 0) {
+      const effectiveUsed = getEffectiveAIUsed(profile) + 1;
+      await upsertUsage(token, profile, effectiveUsed);
     }
 
     return NextResponse.json({ ideas });
   } catch (error) {
+    captureServerException(error, {
+      tags: { route: "ai_expand" },
+      user: { id: userId },
+      contexts: {
+          ai_expand: {
+            model: MODEL,
+            node_label: nodeLabel,
+            profile_plan: getEffectivePlan(profile),
+          },
+        },
+      });
+
     const message =
-      error instanceof Error ? error.message : "알 수 없는 오류가 발생했습니다.";
+      error instanceof Error ? error.message : "Unknown AI expansion error.";
+
     return NextResponse.json({ error: message }, { status: 500 });
   }
 }

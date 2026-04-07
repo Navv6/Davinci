@@ -3,9 +3,12 @@
 import type { GraphEdge, GraphNode } from "@/types/davinci";
 
 type MiniMapPanelProps = {
+  className?: string;
+  collapsed?: boolean;
   edges: GraphEdge[];
   nodes: GraphNode[];
   onSelectNode: (id: number) => void;
+  onToggleCollapse?: () => void;
   rootId: number;
   selectedNodeId: number;
   viewState: {
@@ -77,9 +80,12 @@ function projectToMiniMap(
 }
 
 export function MiniMapPanel({
+  className,
+  collapsed = false,
   edges,
   nodes,
   onSelectNode,
+  onToggleCollapse,
   rootId,
   selectedNodeId,
   viewState,
@@ -191,24 +197,37 @@ export function MiniMapPanel({
   return (
     <div
       data-graph-control
-      className="pointer-events-auto absolute left-6 top-28 z-30 w-[15.5rem] rounded-[1.45rem] border border-[#e8d5b8] bg-[rgba(250,248,243,0.95)] px-4 py-4 shadow-[0_20px_44px_rgba(61,43,18,0.08)] backdrop-blur-md"
+      className={`pointer-events-auto absolute left-6 top-28 z-30 w-[15.5rem] rounded-[1.45rem] border border-[#e8d5b8] bg-[rgba(250,248,243,0.95)] px-4 py-4 shadow-[0_20px_44px_rgba(61,43,18,0.08)] backdrop-blur-md ${className ?? ""}`}
     >
       <div className="flex items-center justify-between">
-        <div>
-          <p className="text-[10px] uppercase tracking-[0.24em] text-[#8b6c42]">
+        <div className="flex items-center gap-2">
+          <p className="text-[11px] uppercase tracking-[0.24em] text-[#8b6c42]">
             3D Mini Map
           </p>
+          {onToggleCollapse ? (
+            <button
+              type="button"
+              onClick={onToggleCollapse}
+              title={collapsed ? "미니맵 펼치기" : "미니맵 접기"}
+              className="rounded-full border border-[#e8d5b8] px-2 py-0.5 text-[11px] tracking-[0.1em] text-[#c4a882] transition-colors duration-200 hover:border-[#8b6c42] hover:text-[#8b6c42]"
+            >
+              {collapsed ? "▾" : "▴"}
+            </button>
+          ) : null}
         </div>
 
-        <button
-          type="button"
-          onClick={() => onSelectNode(rootId)}
-          className="rounded-full border border-[#e8d5b8] px-3 py-1 text-[10px] tracking-[0.14em] text-[#8b6c42] transition-colors duration-200 hover:bg-[#8b6c42] hover:text-[#faf8f3]"
-        >
-          중심
-        </button>
+        {!collapsed ? (
+          <button
+            type="button"
+            onClick={() => onSelectNode(rootId)}
+            className="rounded-full border border-[#e8d5b8] px-3 py-1 text-[11px] tracking-[0.14em] text-[#8b6c42] transition-colors duration-200 hover:bg-[#8b6c42] hover:text-[#faf8f3]"
+          >
+            중심
+          </button>
+        ) : null}
       </div>
 
+      {collapsed ? null : (
       <div className="mt-4 overflow-hidden rounded-[1.1rem] border border-[#ecdcc4] bg-[radial-gradient(circle_at_50%_35%,rgba(255,253,249,0.98),rgba(246,240,229,0.94))]">
         <svg
           viewBox={`0 0 ${MAP_SIZE} ${MAP_SIZE}`}
@@ -295,6 +314,7 @@ export function MiniMapPanel({
           })}
         </svg>
       </div>
+      )}
 
     </div>
   );

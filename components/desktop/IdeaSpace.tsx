@@ -1,24 +1,44 @@
-"use client";
+﻿"use client";
 
 import { useEffect, useMemo, useRef, useState } from "react";
 import * as THREE from "three";
 import { IdeaSidebar } from "@/components/desktop/IdeaSidebar";
-import { MiniMapPanel } from "@/components/desktop/MiniMapPanel";
 import { NodeInfoPanel } from "@/components/desktop/NodeInfoPanel";
-import {
-  getRemainingAIUses,
-  hasRemainingAIUsage,
-  incrementAIUsageCount,
-} from "@/lib/aiUsage";
+import { ProfileSidebar } from "@/components/desktop/ProfileSidebar";
+import { getEffectiveQuota, getRemainingAIUses } from "@/lib/aiUsage";
+import type {
+  SupporterRequest,
+  WorkspaceGraphSummary,
+  WorkspaceProfile,
+} from "@/lib/cloudStorage";
+import { getSupabaseBrowserClient } from "@/lib/supabase";
 import { createGraphSeed, createSpawnedNode, getPaletteForLevel } from "@/lib/graphData";
-import { saveGraph } from "@/lib/storage";
+import { serializeOutlineTree } from "@/lib/outline";
+import { saveGraph, type SavedGraph } from "@/lib/storage";
 import type { GraphEdge, GraphNode, GraphSeed } from "@/types/davinci";
 
 type IdeaSpaceProps = {
+  authReady?: boolean;
+  authUser?: { email: string | null; id: string } | null;
+  graphId: string;
+  graphTitle: string;
   initialMemo?: string;
   initialSeed?: GraphSeed;
+  onAIUsageConsumed?: () => void;
+  onArchiveGraph?: (graphId: string) => Promise<void>;
+  onCreateGraph?: () => Promise<void>;
+  onDeleteGraph?: (graphId: string) => Promise<void>;
+  onGraphPersisted?: (graph: SavedGraph) => void;
   onRestart: () => void;
+  onSelectGraph?: (graphId: string) => Promise<void>;
+  onSignIn?: () => void;
+  onSignOut?: () => void;
+  supporterRequest?: SupporterRequest | null;
+  onToggleFavoriteGraph?: (graphId: string, value: boolean) => Promise<void>;
+  onUpgradeClick?: () => void;
   topic: string;
+  workspaceGraphs?: WorkspaceGraphSummary[];
+  workspaceProfile?: WorkspaceProfile | null;
 };
 
 type RuntimeNode = GraphNode & {
@@ -42,7 +62,9 @@ type EdgeRuntime = {
 };
 
 type GraphApi = {
+  clearSelection: () => void;
   deleteSelectedNode: () => void;
+  resetCamera: () => void;
   selectNode: (id: number) => void;
   spawnMultipleNodes: (
     parentId: number,
@@ -103,7 +125,29 @@ function disposeNodeRuntime(runtime: NodeRuntime) {
   });
 }
 
-export function IdeaSpace({ initialMemo, initialSeed, onRestart, topic }: IdeaSpaceProps) {
+export function IdeaSpace({
+  authReady,
+  authUser,
+  graphId,
+  graphTitle,
+  initialMemo,
+  initialSeed,
+  onAIUsageConsumed,
+  onArchiveGraph,
+  onCreateGraph,
+  onDeleteGraph,
+  onGraphPersisted,
+  onRestart,
+  onSelectGraph,
+  onSignIn,
+  onSignOut,
+  supporterRequest,
+  onToggleFavoriteGraph,
+  onUpgradeClick,
+  topic,
+  workspaceGraphs = [],
+  workspaceProfile = null,
+}: IdeaSpaceProps) {
   const containerRef = useRef<HTMLDivElement>(null);
   const canvasRef = useRef<HTMLCanvasElement>(null);
   const labelsRef = useRef<SVGSVGElement>(null);
@@ -135,17 +179,44 @@ export function IdeaSpace({ initialMemo, initialSeed, onRestart, topic }: IdeaSp
   const [snapshotNodes, setSnapshotNodes] = useState<GraphNode[]>(seed.nodes);
   const [snapshotEdges, setSnapshotEdges] = useState<GraphEdge[]>(seed.edges);
   const [sidebarOpen, setSidebarOpen] = useState(false);
+  const [profileOpen, setProfileOpen] = useState(false);
   const [workspaceMemo, setWorkspaceMemo] = useState(initialMemo ?? "");
   const [aiExpanding, setAIExpanding] = useState(false);
   const [aiError, setAIError] = useState<string | null>(null);
-  const [remainingAIUses, setRemainingAIUses] = useState(() => getRemainingAIUses());
-  const [miniMapView, setMiniMapView] = useState({
-    focusX: seed.nodes[seed.rootId]?.x ?? 0,
-    focusY: seed.nodes[seed.rootId]?.y ?? 0,
-    focusZ: seed.nodes[seed.rootId]?.z ?? 0,
-    rotX: 0.12,
-    rotY: 0.22,
-  });
+  const remainingAIUses = useMemo(
+    () => getRemainingAIUses(workspaceProfile),
+    [workspaceProfile],
+  );
+  const effectiveQuota = useMemo(
+    () => getEffectiveQuota(workspaceProfile),
+    [workspaceProfile],
+  );
+  const [savedToast, setSavedToast] = useState(false);
+  const savedToastTimerRef = useRef<ReturnType<typeof setTimeout> | null>(null);
+  // Updated every render so the Three.js closure always calls the latest fn
+  const triggerSavedToastRef = useRef<() => void>(() => {});
+
+  useEffect(() => {
+    triggerSavedToastRef.current = () => {
+      setSavedToast(true);
+
+      if (savedToastTimerRef.current) {
+        clearTimeout(savedToastTimerRef.current);
+      }
+
+      savedToastTimerRef.current = setTimeout(() => {
+        setSavedToast(false);
+        savedToastTimerRef.current = null;
+      }, 1200);
+    };
+
+    return () => {
+      if (savedToastTimerRef.current) {
+        clearTimeout(savedToastTimerRef.current);
+        savedToastTimerRef.current = null;
+      }
+    };
+  }, []);
 
   useEffect(() => {
     const container = containerRef.current;
@@ -224,7 +295,6 @@ export function IdeaSpace({ initialMemo, initialSeed, onRestart, topic }: IdeaSp
     let targetZoom = 30;
     let tick = 0;
     let animationFrame = 0;
-    let lastMiniMapSync = 0;
     const pressedKeys = new Set<string>();
 
     const isTypingTarget = (target: EventTarget | null) => {
@@ -280,8 +350,10 @@ export function IdeaSpace({ initialMemo, initialSeed, onRestart, topic }: IdeaSp
 
     const persistGraph = () => {
       updatePersistState();
-      saveGraph({
+      const snapshot: SavedGraph = {
+        graphId,
         topic,
+        title: graphTitle,
         seed: {
           rootId: seed.rootId,
           nextId: persistStateRef.current.nextId,
@@ -290,7 +362,11 @@ export function IdeaSpace({ initialMemo, initialSeed, onRestart, topic }: IdeaSp
         },
         memo: memoRef.current,
         savedAt: new Date().toISOString(),
-      });
+      };
+
+      saveGraph(snapshot);
+      onGraphPersisted?.(snapshot);
+      triggerSavedToastRef.current();
     };
 
     const makeNode = (node: RuntimeNode, animated: boolean) => {
@@ -387,7 +463,7 @@ export function IdeaSpace({ initialMemo, initialSeed, onRestart, topic }: IdeaSp
       }
 
       const siblingCount = edges.filter(([from]) => from === parentId).length;
-      const node = createSpawnedNode("New", nextId, parent, siblingCount);
+      const node = createSpawnedNode("New", nextId, parent, siblingCount, nodes);
       const runtimeNode: RuntimeNode = {
         ...node,
         bornAt: performance.now(),
@@ -417,7 +493,13 @@ export function IdeaSpace({ initialMemo, initialSeed, onRestart, topic }: IdeaSp
       const spawnedIds: number[] = [];
 
       for (const idea of ideas) {
-        const node = createSpawnedNode(idea.label, nextId, parent, siblingCount);
+        const node = createSpawnedNode(
+          idea.label,
+          nextId,
+          parent,
+          siblingCount,
+          nodes,
+        );
         node.description = idea.description;
 
         const runtimeNode: RuntimeNode = {
@@ -520,6 +602,10 @@ export function IdeaSpace({ initialMemo, initialSeed, onRestart, topic }: IdeaSp
     };
 
     nodes.forEach((node) => makeNode(node, node.born > 0));
+    edges.forEach(([fromId, toId]) => {
+      const childNode = nodeMap.get(toId);
+      makeEdge(fromId, toId, Boolean(childNode && childNode.born > 0));
+    });
 
     const resize = () => {
       const width = container.offsetWidth;
@@ -720,6 +806,20 @@ export function IdeaSpace({ initialMemo, initialSeed, onRestart, topic }: IdeaSp
     };
 
     graphApiRef.current = {
+      clearSelection: () => {
+        selectedId.current = -1;
+        setSelectedNode(null);
+      },
+      resetCamera: () => {
+        const root = nodeMap.get(seed.rootId);
+        if (root) {
+          focusTarget.set(root.x, root.y, root.z);
+        }
+        targetRotX = 0.12;
+        targetRotY = 0.22;
+        targetZoom = 30;
+        userPanTarget.set(0, 0, 0);
+      },
       spawnMultipleNodes,
       spawnNode,
       selectNode: setSelected,
@@ -955,16 +1055,6 @@ export function IdeaSpace({ initialMemo, initialSeed, onRestart, topic }: IdeaSp
       camera.lookAt(0, 0, 0);
       const now = performance.now();
 
-      if (now - lastMiniMapSync > 70) {
-        lastMiniMapSync = now;
-        setMiniMapView({
-          focusX: focusCurrent.x,
-          focusY: focusCurrent.y,
-          focusZ: focusCurrent.z,
-          rotX,
-          rotY,
-        });
-      }
 
       nodes.forEach((node, index) => {
         const runtime = nodeRuntimes.get(node.id);
@@ -1060,11 +1150,30 @@ export function IdeaSpace({ initialMemo, initialSeed, onRestart, topic }: IdeaSp
     setAIError(null);
   }, [selectedNodeId]);
 
+  useEffect(() => {
+    const onKeyDown = (e: KeyboardEvent) => {
+      if (e.key === "Escape") {
+        graphApiRef.current?.clearSelection();
+      }
+    };
+    window.addEventListener("keydown", onKeyDown);
+    return () => window.removeEventListener("keydown", onKeyDown);
+  }, []);
+
+  // Auto-clear AI error after 4 seconds
+  useEffect(() => {
+    if (!aiError) return;
+    const t = setTimeout(() => setAIError(null), 4000);
+    return () => clearTimeout(t);
+  }, [aiError]);
+
   const handleMemoChange = (value: string) => {
     memoRef.current = value;
     setWorkspaceMemo(value);
-    saveGraph({
+    const snapshot: SavedGraph = {
+      graphId,
       topic,
+      title: graphTitle,
       seed: {
         rootId: seed.rootId,
         nextId: persistStateRef.current.nextId,
@@ -1073,7 +1182,10 @@ export function IdeaSpace({ initialMemo, initialSeed, onRestart, topic }: IdeaSp
       },
       memo: value,
       savedAt: new Date().toISOString(),
-    });
+    };
+
+    saveGraph(snapshot);
+    onGraphPersisted?.(snapshot);
   };
 
   const handleDeleteNode = () => {
@@ -1085,7 +1197,19 @@ export function IdeaSpace({ initialMemo, initialSeed, onRestart, topic }: IdeaSp
   };
 
   const handleSidebarToggle = () => {
+    setProfileOpen(false);
     setSidebarOpen((current) => !current);
+  };
+
+  const handleProfileToggle = () => {
+    setSidebarOpen(false);
+    setProfileOpen((current) => !current);
+  };
+
+  const handleHomeClick = () => {
+    setProfileOpen(false);
+    setSidebarOpen(false);
+    onRestart();
   };
 
   const handleLabelChange = (value: string) => {
@@ -1111,7 +1235,16 @@ export function IdeaSpace({ initialMemo, initialSeed, onRestart, topic }: IdeaSp
   };
 
   const handleAIExpand = async () => {
-    if (!selectedNode || aiExpanding || !hasRemainingAIUsage()) {
+    if (!selectedNode || aiExpanding) {
+      return;
+    }
+
+    // Require login before calling API
+    const sessionResult = await getSupabaseBrowserClient()?.auth.getSession();
+    const token = sessionResult?.data.session?.access_token;
+
+    if (!token) {
+      setAIError("로그인이 필요합니다.");
       return;
     }
 
@@ -1124,12 +1257,17 @@ export function IdeaSpace({ initialMemo, initialSeed, onRestart, topic }: IdeaSp
         method: "POST",
         headers: {
           "Content-Type": "application/json",
+          Authorization: `Bearer ${token}`,
         },
         body: JSON.stringify({
           nodeLabel: currentNode.label,
           nodeDescription: currentNode.description,
+          outlineText: serializeOutlineTree(
+            seed.rootId,
+            snapshotNodes,
+            snapshotEdges,
+          ),
           topic,
-          existingLabels: snapshotNodes.map((node) => node.label),
         }),
       });
 
@@ -1137,6 +1275,16 @@ export function IdeaSpace({ initialMemo, initialSeed, onRestart, topic }: IdeaSp
         error?: string;
         ideas?: Array<{ description: string; label: string }>;
       };
+
+      if (response.status === 401) {
+        setAIError("로그인이 필요합니다.");
+        return;
+      }
+
+      if (response.status === 429) {
+        setAIError(`사용 횟수를 모두 소진했습니다 (0/${effectiveQuota || 3})`);
+        return;
+      }
 
       if (!response.ok) {
         throw new Error(payload.error || "AI 요청에 실패했습니다.");
@@ -1158,17 +1306,16 @@ export function IdeaSpace({ initialMemo, initialSeed, onRestart, topic }: IdeaSp
         }) ?? [];
 
       if (ideas.length === 0) {
-        setAIError("추가할 아이디어를 찾지 못했습니다.");
+        setAIError("추가 아이디어를 찾지 못했습니다.");
         return;
       }
 
       graphApiRef.current?.spawnMultipleNodes(currentNode.id, ideas);
-      incrementAIUsageCount();
-      setRemainingAIUses(getRemainingAIUses());
+      onAIUsageConsumed?.();
     } catch (error) {
       console.error("[AI Expand]", error);
       setAIError(
-        error instanceof Error ? error.message : "AI 확장 중 오류가 발생했습니다.",
+          error instanceof Error ? error.message : "AI 확장 중 오류가 발생했습니다.",
       );
     } finally {
       setAIExpanding(false);
@@ -1182,7 +1329,7 @@ export function IdeaSpace({ initialMemo, initialSeed, onRestart, topic }: IdeaSp
           그래프를 불러올 수 없습니다
         </p>
         <p className="text-[13px] italic tracking-[0.1em] text-[#8b6c42]">
-          3D 그래픽을 지원하지 않는 환경입니다
+          3D 그래픽을 지원하지 않는 환경입니다.
         </p>
         <button
           onClick={onRestart}
@@ -1202,17 +1349,14 @@ export function IdeaSpace({ initialMemo, initialSeed, onRestart, topic }: IdeaSp
       <canvas ref={canvasRef} className="absolute inset-0 h-full w-full" />
 
       <div className="pointer-events-none absolute inset-0 z-10">
-        <div className="absolute left-1/2 top-6 w-[min(50rem,calc(100%-2rem))] -translate-x-1/2">
-          <div className="rounded-[2.15rem] border border-[#e8d5b8] bg-[rgba(250,248,243,0.96)] px-6 py-5 shadow-[0_18px_40px_rgba(61,43,18,0.07)] backdrop-blur-md">
-            <div className="flex flex-wrap items-center justify-center gap-3 text-center">
-              <h2 className="font-display text-[clamp(1.85rem,2.6vw,2.35rem)] tracking-[0.04em] text-[#1a1208]">
-                {rootNode?.label ?? topic}
-              </h2>
-              <span className="text-[11px] uppercase tracking-[0.22em] text-[#8b6c42]">
-                중심 주제
-              </span>
-            </div>
-
+        <div className="absolute left-1/2 top-6 max-w-[min(36rem,calc(100%-10rem))] -translate-x-1/2">
+          <div className="flex items-center gap-2.5 rounded-full border border-[#e8d5b8] bg-[rgba(250,248,243,0.96)] px-5 py-2.5 shadow-[0_8px_24px_rgba(61,43,18,0.06)] backdrop-blur-md">
+            <h2 className="font-display text-[1.15rem] tracking-[0.04em] text-[#1a1208] truncate">
+              {rootNode?.label ?? topic}
+            </h2>
+            <span className="shrink-0 text-[10px] uppercase tracking-[0.22em] text-[#8b6c42]">
+              중심 주제
+            </span>
           </div>
         </div>
 
@@ -1222,9 +1366,25 @@ export function IdeaSpace({ initialMemo, initialSeed, onRestart, topic }: IdeaSp
         >
           <button
             type="button"
-            onClick={onRestart}
+            onClick={() => {
+              graphApiRef.current?.resetCamera();
+              graphApiRef.current?.selectNode(seed.rootId);
+            }}
+            className="grid h-[38px] w-[38px] place-items-center rounded-full border border-[#e8d5b8] bg-[rgba(250,248,243,0.92)] text-[#8b6c42] transition-all duration-200 hover:border-[#8b6c42] hover:bg-[#8b6c42] hover:text-[#faf8f3]"
+            aria-label="중심으로"
+            title="중심으로"
+          >
+            <svg width="15" height="15" viewBox="0 0 15 15" fill="none" aria-hidden>
+              <circle cx="7.5" cy="7.5" r="2.2" stroke="currentColor" strokeWidth="1.4"/>
+              <circle cx="7.5" cy="7.5" r="5.8" stroke="currentColor" strokeWidth="1.4" strokeDasharray="2.5 2"/>
+            </svg>
+          </button>
+          <button
+            type="button"
+            onClick={handleHomeClick}
             className="grid h-[38px] w-[38px] place-items-center rounded-full border border-[#e8d5b8] bg-[rgba(250,248,243,0.92)] text-[#8b6c42] transition-all duration-200 hover:border-[#8b6c42] hover:bg-[#8b6c42] hover:text-[#faf8f3]"
             aria-label="처음으로"
+            title="처음으로"
           >
             <svg width="16" height="15" viewBox="0 0 16 15" fill="none" aria-hidden>
               <path d="M1 7L8 1L15 7V14H10.5V10H5.5V14H1V7Z" stroke="currentColor" strokeWidth="1.4" strokeLinejoin="round"/>
@@ -1232,8 +1392,22 @@ export function IdeaSpace({ initialMemo, initialSeed, onRestart, topic }: IdeaSp
           </button>
           <button
             type="button"
-            aria-label="사이드바 열기/닫기"
+            aria-label="프로필 열기"
+            aria-expanded={profileOpen}
+            title="프로필 및 AI 사용량"
+            onClick={handleProfileToggle}
+            className="grid h-[38px] w-[38px] place-items-center rounded-full border border-[#e8d5b8] bg-[rgba(250,248,243,0.92)] text-[#8b6c42] transition-all duration-200 hover:border-[#8b6c42] hover:bg-[#8b6c42] hover:text-[#faf8f3]"
+          >
+            <svg width="16" height="16" viewBox="0 0 16 16" fill="none" aria-hidden>
+              <circle cx="8" cy="5" r="2.75" stroke="currentColor" strokeWidth="1.4" />
+              <path d="M3.2 13.1C4.1 10.9 5.8 9.8 8 9.8C10.2 9.8 11.9 10.9 12.8 13.1" stroke="currentColor" strokeWidth="1.4" strokeLinecap="round" />
+            </svg>
+          </button>
+          <button
+            type="button"
+            aria-label="사이드바 열기 또는 닫기"
             aria-expanded={sidebarOpen}
+            title="아이디어 사이드바"
             onClick={handleSidebarToggle}
             className="grid h-[38px] w-[38px] place-items-center rounded-full border border-[#e8d5b8] bg-[rgba(250,248,243,0.92)] text-[#8b6c42] transition-all duration-200 hover:border-[#8b6c42] hover:bg-[#8b6c42] hover:text-[#faf8f3]"
           >
@@ -1245,19 +1419,46 @@ export function IdeaSpace({ initialMemo, initialSeed, onRestart, topic }: IdeaSp
           </button>
         </div>
 
+        {snapshotNodes.length === 1 ? (
+          <div className="pointer-events-none absolute inset-x-0 top-[9.5rem] flex justify-center">
+            <p className="animate-pulse rounded-full border border-[#e8d5b8] bg-[rgba(250,248,243,0.88)] px-4 py-2 text-[12px] italic tracking-[0.18em] text-[#8b6c42] backdrop-blur-sm">
+              노드 이름 옆 <span className="not-italic font-semibold">+</span> 를 눌러 첫 아이디어를 추가해보세요
+            </p>
+          </div>
+        ) : null}
+
+        <div
+          className={`pointer-events-none absolute left-1/2 top-4 z-50 -translate-x-1/2 rounded-full border border-[#e8d5b8] bg-[rgba(250,248,243,0.96)] px-4 py-1.5 text-[10px] italic tracking-[0.18em] text-[#8b6c42] shadow-sm transition-all duration-300 ${
+            savedToast ? "opacity-100 translate-y-0" : "opacity-0 -translate-y-1"
+          }`}
+        >
+          저장됨
+        </div>
+
         <svg
           ref={labelsRef}
           className="pointer-events-auto absolute inset-0 h-full w-full"
           xmlns="http://www.w3.org/2000/svg"
         />
 
-        <MiniMapPanel
-          edges={snapshotEdges}
-          nodes={snapshotNodes}
-          onSelectNode={handleMiniMapSelect}
-          rootId={seed.rootId}
-          selectedNodeId={selectedNodeId}
-          viewState={miniMapView}
+
+        <ProfileSidebar
+          authEmail={authUser?.email}
+          authReady={authReady}
+          currentGraphId={graphId}
+          graphs={workspaceGraphs}
+          onArchiveGraph={onArchiveGraph}
+          onClose={() => setProfileOpen(false)}
+          onCreateGraph={onCreateGraph}
+          onDeleteGraph={onDeleteGraph}
+          onSelectGraph={onSelectGraph}
+          onSignIn={onSignIn}
+          onSignOut={onSignOut}
+          onToggleFavoriteGraph={onToggleFavoriteGraph}
+          onUpgradeClick={onUpgradeClick}
+          open={profileOpen}
+          profile={workspaceProfile}
+          supporterRequest={supporterRequest ?? null}
         />
 
         <IdeaSidebar
@@ -1268,19 +1469,26 @@ export function IdeaSpace({ initialMemo, initialSeed, onRestart, topic }: IdeaSp
           onSelectNode={handleMiniMapSelect}
           open={sidebarOpen}
           rootId={seed.rootId}
-          selectedNode={selectedNode}
           selectedNodeId={selectedNodeId}
         />
 
         <NodeInfoPanel
           aiError={aiError}
           aiExpanding={aiExpanding}
+          aiQuota={effectiveQuota}
           canDelete={Boolean(selectedNode && selectedNode.id !== seed.rootId)}
+          isLoggedIn={Boolean(authUser)}
           node={selectedNode}
           onAIExpand={handleAIExpand}
           onDelete={handleDeleteNode}
           onDescriptionChange={handleDescriptionChange}
           onLabelChange={handleLabelChange}
+          onSpawnChild={
+            selectedNode
+              ? () => graphApiRef.current?.spawnNode(selectedNode.id)
+              : undefined
+          }
+          onUpgradeClick={onUpgradeClick}
           remainingAIUses={remainingAIUses}
           visible={Boolean(selectedNode)}
         />
@@ -1290,17 +1498,21 @@ export function IdeaSpace({ initialMemo, initialSeed, onRestart, topic }: IdeaSp
             sidebarOpen ? "right-[24.5rem]" : "right-7"
           }`}
         >
-          좌클릭 · 노드 선택
+          좌클릭: 노드 선택
           <br />
-          우클릭 드래그 · 시점 조절
+          우클릭 드래그: 시점 조절
           <br />
-          Shift+드래그 · 이동
+          Shift+드래그: 이동
           <br />
-          휠 · 줌
+          휠: 줌
           <br />
-          WASD/방향키 · 카메라 이동
+          WASD/방향키: 카메라 이동
           <br />
           노드 또는 + 클릭
+          <br />
+          Esc: 패널 닫기
+          <br />
+          첫 버튼: 시점 초기화
         </div>
       </div>
     </div>

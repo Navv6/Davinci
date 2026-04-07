@@ -6,12 +6,16 @@ import type { GraphNode } from "@/types/davinci";
 type NodeInfoPanelProps = {
   aiError?: string | null;
   aiExpanding?: boolean;
+  aiQuota?: number;
   canDelete: boolean;
+  isLoggedIn?: boolean;
   node: GraphNode | null;
   onAIExpand?: () => void;
   onDelete: () => void;
   onDescriptionChange: (value: string) => void;
   onLabelChange: (value: string) => void;
+  onSpawnChild?: () => void;
+  onUpgradeClick?: () => void;
   remainingAIUses?: number;
   visible: boolean;
 };
@@ -27,12 +31,16 @@ const CATEGORY_LABEL = {
 export function NodeInfoPanel({
   aiError,
   aiExpanding,
+  aiQuota,
   canDelete,
+  isLoggedIn,
   node,
   onAIExpand,
   onDelete,
   onDescriptionChange,
   onLabelChange,
+  onSpawnChild,
+  onUpgradeClick,
   remainingAIUses,
   visible,
 }: NodeInfoPanelProps) {
@@ -55,19 +63,32 @@ export function NodeInfoPanel({
       }`}
     >
       <div className="mb-4 flex items-center justify-between">
-        <span className="text-[10px] uppercase tracking-[0.26em] text-[#c4a882]">
+        <span className="text-[11px] uppercase tracking-[0.26em] text-[#c4a882]">
           {CATEGORY_LABEL[category]}
         </span>
 
-        {canDelete ? (
-          <button
-            type="button"
-            onClick={onDelete}
-            className="text-[11px] italic tracking-[0.1em] text-[#c4a882] transition-colors duration-200 hover:text-[#8b6c42]"
-          >
-            삭제
-          </button>
-        ) : null}
+        <div className="flex items-center gap-4">
+          {onSpawnChild ? (
+            <button
+              type="button"
+              onClick={onSpawnChild}
+              className="inline-flex h-8 w-8 items-center justify-center rounded-full border border-[#e8d5b8] text-[16px] leading-none text-[#8b6c42] transition-all duration-200 hover:border-[#8b6c42] hover:bg-[#8b6c42] hover:text-[#faf8f3]"
+              aria-label="자식 추가"
+            >
+              +
+            </button>
+          ) : null}
+          {canDelete ? (
+            <button
+              type="button"
+              onClick={onDelete}
+              className="inline-flex h-8 w-8 items-center justify-center rounded-full border border-[#ecdcc4] text-[16px] leading-none text-[#c4a882] transition-all duration-200 hover:border-[#8b6c42] hover:bg-[#8b6c42] hover:text-[#faf8f3]"
+              aria-label="삭제"
+            >
+              -
+            </button>
+          ) : null}
+        </div>
       </div>
 
       <input
@@ -102,7 +123,11 @@ export function NodeInfoPanel({
 
       {onAIExpand ? (
         <div className="mt-4 border-t border-[#e8d5b8] pt-4">
-          {remainingAIUses !== undefined && remainingAIUses > 0 ? (
+          {isLoggedIn === false ? (
+            <p className="text-center text-[11px] italic tracking-[0.12em] text-[#c4a882]">
+              로그인 후 AI 확장 가능
+            </p>
+          ) : remainingAIUses !== undefined && remainingAIUses > 0 ? (
             <button
               type="button"
               onClick={onAIExpand}
@@ -113,15 +138,26 @@ export function NodeInfoPanel({
               {aiExpanding ? (
                 <span className="h-3.5 w-3.5 animate-spin rounded-full border border-[#c4a882] border-t-[#8b6c42]" />
               ) : (
-                <span className="not-italic text-[10px] tracking-[0.15em] text-[#c4a882]">
-                  {remainingAIUses}/3
+                <span className="not-italic text-[11px] tracking-[0.15em] text-[#c4a882]">
+                  {remainingAIUses}/{aiQuota ?? 3}
                 </span>
               )}
             </button>
           ) : remainingAIUses === 0 ? (
-            <p className="text-center text-[11px] italic tracking-[0.12em] text-[#c4a882]">
-              구독이 필요합니다 (0/3)
-            </p>
+            <div className="flex items-center justify-between gap-3">
+              <p className="text-[11px] italic tracking-[0.12em] text-[#c4a882]">
+                AI 사용 횟수 소진 (0/{aiQuota ?? 3})
+              </p>
+              {onUpgradeClick ? (
+                <button
+                  type="button"
+                  onClick={onUpgradeClick}
+                  className="shrink-0 rounded-full border border-[#c4a882] px-3 py-1.5 text-[11px] italic tracking-[0.14em] text-[#8b6c42] transition-colors hover:bg-[#f0ebe2]"
+                >
+                  Pro 전환
+                </button>
+              ) : null}
+            </div>
           ) : null}
 
           {aiError ? (

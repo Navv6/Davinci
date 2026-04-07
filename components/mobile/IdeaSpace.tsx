@@ -3,21 +3,39 @@
 import { useEffect, useMemo, useRef, useState } from "react";
 import * as THREE from "three";
 import { SideDrawer } from "@/components/mobile/SideDrawer";
-import { MiniMapPanel } from "@/components/desktop/MiniMapPanel";
-import {
-  getRemainingAIUses,
-  hasRemainingAIUsage,
-  incrementAIUsageCount,
-} from "@/lib/aiUsage";
+import { getEffectiveQuota, getRemainingAIUses } from "@/lib/aiUsage";
+import type {
+  SupporterRequest,
+  WorkspaceGraphSummary,
+  WorkspaceProfile,
+} from "@/lib/cloudStorage";
+import { getSupabaseBrowserClient } from "@/lib/supabase";
 import { createGraphSeed, createSpawnedNode, getPaletteForLevel } from "@/lib/graphData";
-import { saveGraph } from "@/lib/storage";
+import { serializeOutlineTree } from "@/lib/outline";
+import { saveGraph, type SavedGraph } from "@/lib/storage";
 import type { GraphEdge, GraphNode, GraphSeed } from "@/types/davinci";
 
 type MobileIdeaSpaceProps = {
+  authReady?: boolean;
+  authUser?: { email: string | null; id: string } | null;
+  graphId: string;
+  graphTitle: string;
   initialMemo?: string;
   initialSeed?: GraphSeed;
+  onAIUsageConsumed?: () => void;
+  onArchiveGraph?: (graphId: string) => Promise<void>;
+  onCreateGraph?: () => Promise<void>;
+  onGraphPersisted?: (graph: SavedGraph) => void;
   onRestart: () => void;
+  onSelectGraph?: (graphId: string) => Promise<void>;
+  onSignIn?: () => void;
+  onSignOut?: () => void;
+  supporterRequest?: SupporterRequest | null;
+  onToggleFavoriteGraph?: (graphId: string, value: boolean) => Promise<void>;
+  onUpgradeClick?: () => void;
   topic: string;
+  workspaceGraphs?: WorkspaceGraphSummary[];
+  workspaceProfile?: WorkspaceProfile | null;
 };
 
 type RuntimeNode = GraphNode & { bornAt: number };
@@ -40,6 +58,7 @@ type EdgeRuntime = {
 
 type GraphApi = {
   deleteSelectedNode: () => void;
+  resetCamera: () => void;
   selectNode: (id: number) => void;
   spawnMultipleNodes: (
     parentId: number,
@@ -93,7 +112,28 @@ const CATEGORY_LABEL = {
   reference: "레퍼런스",
 } as const;
 
-export function MobileIdeaSpace({ initialMemo, initialSeed, onRestart, topic }: MobileIdeaSpaceProps) {
+export function MobileIdeaSpace({
+  authReady,
+  authUser,
+  graphId,
+  graphTitle,
+  initialMemo,
+  initialSeed,
+  onAIUsageConsumed,
+  onArchiveGraph,
+  onCreateGraph,
+  onGraphPersisted,
+  onRestart,
+  onSelectGraph,
+  onSignIn,
+  onSignOut,
+  supporterRequest,
+  onToggleFavoriteGraph,
+  onUpgradeClick,
+  topic,
+  workspaceGraphs = [],
+  workspaceProfile = null,
+}: MobileIdeaSpaceProps) {
   const containerRef = useRef<HTMLDivElement>(null);
   const canvasRef = useRef<HTMLCanvasElement>(null);
   const labelsRef = useRef<SVGSVGElement>(null);
@@ -131,14 +171,14 @@ export function MobileIdeaSpace({ initialMemo, initialSeed, onRestart, topic }: 
   const [workspaceMemo, setWorkspaceMemo] = useState(initialMemo ?? "");
   const [aiExpanding, setAIExpanding] = useState(false);
   const [aiError, setAIError] = useState<string | null>(null);
-  const [remainingAIUses, setRemainingAIUses] = useState(() => getRemainingAIUses());
-  const [miniMapView, setMiniMapView] = useState({
-    focusX: seed.nodes[seed.rootId]?.x ?? 0,
-    focusY: seed.nodes[seed.rootId]?.y ?? 0,
-    focusZ: seed.nodes[seed.rootId]?.z ?? 0,
-    rotX: 0.12,
-    rotY: 0.22,
-  });
+  const remainingAIUses = useMemo(
+    () => getRemainingAIUses(workspaceProfile),
+    [workspaceProfile],
+  );
+  const effectiveQuota = useMemo(
+    () => getEffectiveQuota(workspaceProfile),
+    [workspaceProfile],
+  );
   const [joystickPos, setJoystickPos] = useState({ x: 0, y: 0 });
   const joystickVecRef = useRef({ x: 0, y: 0 });
 
@@ -209,7 +249,6 @@ export function MobileIdeaSpace({ initialMemo, initialSeed, onRestart, topic }: 
     let targetZoom = 30;
     let tick = 0;
     let animationFrame = 0;
-    let lastMiniMapSync = 0;
 
     // Touch state
     let lastTouchX = 0;
@@ -253,8 +292,10 @@ export function MobileIdeaSpace({ initialMemo, initialSeed, onRestart, topic }: 
 
     const persistGraph = () => {
       updatePersistState();
-      saveGraph({
+      const snapshot: SavedGraph = {
+        graphId,
         topic,
+        title: graphTitle,
         seed: {
           rootId: seed.rootId,
           nextId: persistStateRef.current.nextId,
@@ -263,7 +304,10 @@ export function MobileIdeaSpace({ initialMemo, initialSeed, onRestart, topic }: 
         },
         memo: memoRef.current,
         savedAt: new Date().toISOString(),
-      });
+      };
+
+      saveGraph(snapshot);
+      onGraphPersisted?.(snapshot);
     };
 
     const makeNode = (node: RuntimeNode, animated: boolean) => {
@@ -337,7 +381,7 @@ export function MobileIdeaSpace({ initialMemo, initialSeed, onRestart, topic }: 
       if (!parent) return;
 
       const siblingCount = edges.filter(([from]) => from === parentId).length;
-      const node = createSpawnedNode("New", nextId, parent, siblingCount);
+      const node = createSpawnedNode("New", nextId, parent, siblingCount, nodes);
       const runtimeNode: RuntimeNode = { ...node, bornAt: performance.now() };
 
       nextId += 1;
@@ -363,7 +407,13 @@ export function MobileIdeaSpace({ initialMemo, initialSeed, onRestart, topic }: 
       const spawnedIds: number[] = [];
 
       for (const idea of ideas) {
-        const node = createSpawnedNode(idea.label, nextId, parent, siblingCount);
+        const node = createSpawnedNode(
+          idea.label,
+          nextId,
+          parent,
+          siblingCount,
+          nodes,
+        );
         node.description = idea.description;
 
         const runtimeNode: RuntimeNode = {
@@ -443,6 +493,10 @@ export function MobileIdeaSpace({ initialMemo, initialSeed, onRestart, topic }: 
     };
 
     nodes.forEach((node) => makeNode(node, node.born > 0));
+    edges.forEach(([fromId, toId]) => {
+      const childNode = nodeMap.get(toId);
+      makeEdge(fromId, toId, Boolean(childNode && childNode.born > 0));
+    });
 
     const resize = () => {
       const width = container.offsetWidth;
@@ -605,6 +659,17 @@ export function MobileIdeaSpace({ initialMemo, initialSeed, onRestart, topic }: 
     };
 
     graphApiRef.current = {
+      resetCamera: () => {
+        const root = nodeMap.get(seed.rootId);
+        if (root) {
+          focusTarget.set(root.x, root.y, root.z);
+        }
+
+        targetRotX = 0.12;
+        targetRotY = 0.22;
+        targetZoom = 30;
+        userPanTarget.set(0, 0, 0);
+      },
       spawnMultipleNodes,
       spawnNode,
       selectNode: setSelected,
@@ -725,13 +790,6 @@ export function MobileIdeaSpace({ initialMemo, initialSeed, onRestart, topic }: 
       camera.position.z = zoom;
       camera.lookAt(0, 0, 0);
 
-      // Minimap sync
-      const now2 = performance.now();
-      if (now2 - lastMiniMapSync > 80) {
-        lastMiniMapSync = now2;
-        setMiniMapView({ focusX: focusCurrent.x, focusY: focusCurrent.y, focusZ: focusCurrent.z, rotX, rotY });
-      }
-
       nodes.forEach((node, index) => {
         const runtime = nodeRuntimes.get(node.id);
         if (!runtime || performance.now() < node.bornAt) return;
@@ -793,11 +851,20 @@ export function MobileIdeaSpace({ initialMemo, initialSeed, onRestart, topic }: 
     setAIError(null);
   }, [selectedNodeId]);
 
+  // Auto-clear AI error after 4 seconds
+  useEffect(() => {
+    if (!aiError) return;
+    const t = setTimeout(() => setAIError(null), 4000);
+    return () => clearTimeout(t);
+  }, [aiError]);
+
   const handleMemoChange = (value: string) => {
     memoRef.current = value;
     setWorkspaceMemo(value);
-    saveGraph({
+    const snapshot: SavedGraph = {
+      graphId,
       topic,
+      title: graphTitle,
       seed: {
         rootId: seed.rootId,
         nextId: persistStateRef.current.nextId,
@@ -806,7 +873,10 @@ export function MobileIdeaSpace({ initialMemo, initialSeed, onRestart, topic }: 
       },
       memo: value,
       savedAt: new Date().toISOString(),
-    });
+    };
+
+    saveGraph(snapshot);
+    onGraphPersisted?.(snapshot);
   };
 
   const handleLabelChange = (value: string) => {
@@ -824,8 +894,23 @@ export function MobileIdeaSpace({ initialMemo, initialSeed, onRestart, topic }: 
     setPanelOpen(false);
   };
 
+  const handleHomeClick = () => {
+    setPanelOpen(false);
+    setDrawerOpen(false);
+    onRestart();
+  };
+
   const handleAIExpand = async () => {
-    if (!selectedNode || aiExpanding || !hasRemainingAIUsage()) return;
+    if (!selectedNode || aiExpanding) return;
+
+    // Require login before calling API
+    const sessionResult = await getSupabaseBrowserClient()?.auth.getSession();
+    const token = sessionResult?.data.session?.access_token;
+
+    if (!token) {
+      setAIError("로그인이 필요합니다");
+      return;
+    }
 
     const currentNode = selectedNode;
     setAIError(null);
@@ -836,12 +921,17 @@ export function MobileIdeaSpace({ initialMemo, initialSeed, onRestart, topic }: 
         method: "POST",
         headers: {
           "Content-Type": "application/json",
+          Authorization: `Bearer ${token}`,
         },
         body: JSON.stringify({
           nodeLabel: currentNode.label,
           nodeDescription: currentNode.description,
+          outlineText: serializeOutlineTree(
+            seed.rootId,
+            snapshotNodes,
+            snapshotEdges,
+          ),
           topic,
-          existingLabels: snapshotNodes.map((node) => node.label),
         }),
       });
 
@@ -849,6 +939,16 @@ export function MobileIdeaSpace({ initialMemo, initialSeed, onRestart, topic }: 
         error?: string;
         ideas?: Array<{ description: string; label: string }>;
       };
+
+      if (response.status === 401) {
+        setAIError("로그인이 필요합니다");
+        return;
+      }
+
+      if (response.status === 429) {
+        setAIError(`사용 횟수를 초과했습니다 (0/${effectiveQuota || 3})`);
+        return;
+      }
 
       if (!response.ok) {
         throw new Error(payload.error || "AI 요청에 실패했습니다.");
@@ -875,8 +975,7 @@ export function MobileIdeaSpace({ initialMemo, initialSeed, onRestart, topic }: 
       }
 
       graphApiRef.current?.spawnMultipleNodes(currentNode.id, ideas);
-      incrementAIUsageCount();
-      setRemainingAIUses(getRemainingAIUses());
+      onAIUsageConsumed?.();
     } catch (error) {
       console.error("[AI Expand]", error);
       setAIError(
@@ -931,7 +1030,7 @@ export function MobileIdeaSpace({ initialMemo, initialSeed, onRestart, topic }: 
           3D 그래픽을 지원하지 않는 환경입니다
         </p>
         <button
-          onClick={onRestart}
+          onClick={handleHomeClick}
           className="mt-4 border border-[#c4a882] px-8 py-3 text-[13px] italic tracking-[0.12em] text-[#8b6c42]"
         >
           돌아가기
@@ -979,6 +1078,15 @@ export function MobileIdeaSpace({ initialMemo, initialSeed, onRestart, topic }: 
         </button>
       </div>
 
+      {/* First-node hint */}
+      {snapshotNodes.length === 1 ? (
+        <div className="pointer-events-none absolute inset-x-0 top-[55%] flex justify-center">
+          <p className="animate-pulse text-[11px] italic tracking-[0.2em] text-[#d4b896]">
+            노드를 탭하고 + 로 가지를 추가하세요
+          </p>
+        </div>
+      ) : null}
+
       {/* SVG labels */}
       <svg
         ref={labelsRef}
@@ -989,7 +1097,8 @@ export function MobileIdeaSpace({ initialMemo, initialSeed, onRestart, topic }: 
       {/* Bottom panel */}
       <div
         data-graph-control
-        className={`pointer-events-auto fixed bottom-0 left-0 right-0 z-30 rounded-t-[1.75rem] border-t border-[#e8d5b8] bg-[rgba(250,248,243,0.98)] px-5 pb-8 pt-5 shadow-[0_-12px_32px_rgba(61,43,18,0.08)] backdrop-blur-md transition-transform duration-300 ${
+        style={{ paddingBottom: "max(2rem, env(safe-area-inset-bottom))" }}
+        className={`pointer-events-auto fixed bottom-0 left-0 right-0 z-30 rounded-t-[1.75rem] border-t border-[#e8d5b8] bg-[rgba(250,248,243,0.98)] px-5 pt-5 shadow-[0_-12px_32px_rgba(61,43,18,0.08)] backdrop-blur-md transition-transform duration-300 ${
           panelOpen && selectedNode ? "translate-y-0" : "translate-y-full"
         }`}
       >
@@ -1007,15 +1116,31 @@ export function MobileIdeaSpace({ initialMemo, initialSeed, onRestart, topic }: 
               <span className="text-[10px] uppercase tracking-[0.26em] text-[#c4a882]">
                 {CATEGORY_LABEL[category]}
               </span>
-              {canDelete ? (
+              <div className="flex items-center gap-4">
                 <button
                   type="button"
-                  onClick={handleDelete}
-                  className="text-[12px] italic tracking-[0.1em] text-[#c4a882]"
+                  onClick={() => {
+                    if (selectedNode) {
+                      graphApiRef.current?.spawnNode(selectedNode.id);
+                      setPanelOpen(false);
+                    }
+                  }}
+                  className="inline-flex h-9 w-9 items-center justify-center rounded-full border border-[#e8d5b8] text-[18px] leading-none text-[#8b6c42] transition-all duration-200 hover:border-[#8b6c42] hover:bg-[#8b6c42] hover:text-[#faf8f3]"
+                  aria-label="자식 추가"
                 >
-                  삭제
+                  +
                 </button>
-              ) : null}
+                {canDelete ? (
+                  <button
+                    type="button"
+                    onClick={handleDelete}
+                    className="inline-flex h-9 w-9 items-center justify-center rounded-full border border-[#ecdcc4] text-[18px] leading-none text-[#c4a882] transition-all duration-200 hover:border-[#8b6c42] hover:bg-[#8b6c42] hover:text-[#faf8f3]"
+                    aria-label="삭제"
+                  >
+                    -
+                  </button>
+                ) : null}
+              </div>
             </div>
 
             <input
@@ -1049,7 +1174,11 @@ export function MobileIdeaSpace({ initialMemo, initialSeed, onRestart, topic }: 
             />
 
             <div className="mt-4 border-t border-[#e8d5b8] pt-4">
-              {remainingAIUses > 0 ? (
+              {!authUser ? (
+                <p className="text-center text-[12px] italic tracking-[0.12em] text-[#c4a882]">
+                  로그인 후 AI 확장 가능
+                </p>
+              ) : remainingAIUses > 0 ? (
                 <button
                   type="button"
                   onClick={handleAIExpand}
@@ -1061,13 +1190,13 @@ export function MobileIdeaSpace({ initialMemo, initialSeed, onRestart, topic }: 
                     <span className="h-3.5 w-3.5 animate-spin rounded-full border border-[#c4a882] border-t-[#8b6c42]" />
                   ) : (
                     <span className="not-italic text-[11px] tracking-[0.15em] text-[#c4a882]">
-                      {remainingAIUses}/3
+                      {remainingAIUses}/{effectiveQuota || 3}
                     </span>
                   )}
                 </button>
               ) : (
                 <p className="text-center text-[12px] italic tracking-[0.12em] text-[#c4a882]">
-                  구독이 필요합니다 (0/3)
+                  사용 횟수 소진 (0/{effectiveQuota || 3})
                 </p>
               )}
 
@@ -1079,21 +1208,6 @@ export function MobileIdeaSpace({ initialMemo, initialSeed, onRestart, topic }: 
             </div>
           </>
         ) : null}
-      </div>
-
-      {/* Minimap — scaled down for mobile */}
-      <div
-        className="pointer-events-none absolute inset-0 z-20"
-        style={{ transformOrigin: "top left", transform: "scale(0.62)", width: "161%", height: "161%" }}
-      >
-        <MiniMapPanel
-          edges={snapshotEdges}
-          nodes={snapshotNodes}
-          onSelectNode={(id) => { graphApiRef.current?.selectNode(id); setPanelOpen(true); }}
-          rootId={seed.rootId}
-          selectedNodeId={selectedNodeId}
-          viewState={miniMapView}
-        />
       </div>
 
       {/* Virtual Joystick */}
@@ -1119,17 +1233,31 @@ export function MobileIdeaSpace({ initialMemo, initialSeed, onRestart, topic }: 
 
       {/* Side drawer */}
       <SideDrawer
+        authEmail={authUser?.email}
+        authReady={authReady}
+        currentGraphId={graphId}
+        currentGraphTitle={graphTitle}
         edges={snapshotEdges}
+        graphs={workspaceGraphs}
         memo={workspaceMemo}
         nodes={snapshotNodes}
+        onArchiveGraph={onArchiveGraph}
         onClose={() => setDrawerOpen(false)}
+        onCreateGraph={onCreateGraph}
         onMemoChange={handleMemoChange}
+        onSelectGraph={onSelectGraph}
         onSelectNode={(id) => {
           graphApiRef.current?.selectNode(id);
           setDrawerOpen(false);
           setPanelOpen(true);
         }}
+        onSignIn={onSignIn}
+        onSignOut={onSignOut}
+        supporterRequest={supporterRequest ?? null}
+        onToggleFavoriteGraph={onToggleFavoriteGraph}
+        onUpgradeClick={onUpgradeClick}
         open={drawerOpen}
+        profile={workspaceProfile}
         rootId={seed.rootId}
         selectedNodeId={selectedNodeId}
       />

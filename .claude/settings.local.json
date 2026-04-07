@@ -1,0 +1,19 @@
+{
+  "permissions": {
+    "allow": [
+      "Bash(npx tsc:*)",
+      "Bash(npx next:*)",
+      "Bash(npx eslint:*)",
+      "Bash(npm run:*)",
+      "Bash(node -e \"const p = require\\(''./package.json''\\); console.log\\(p.dependencies.next, p.dependencies.stripe\\)\")",
+      "Bash(npm install:*)",
+      "Bash(node -e \"const s = require\\(''./node_modules/stripe''\\); console.log\\(Object.keys\\(s.LATEST_API_VERSION ? s : {}\\)\\)\")",
+      "Bash(node -e \"const {Stripe} = require\\(''./node_modules/stripe''\\); const s = new Stripe\\(''sk_test_x''\\); console.log\\(s.API_VERSION || ''unknown''\\)\")",
+      "Bash(node -e \"const pkg = require\\(''./node_modules/stripe/package.json''\\); console.log\\(pkg.version\\)\")",
+      "Bash(node -e \"const {Stripe} = require\\(''./node_modules/stripe''\\); console.log\\(Stripe.LATEST_API_VERSION\\)\")",
+      "Bash(node -e \"const stripe = require\\(''./node_modules/stripe''\\); console.log\\(stripe.Stripe?.LATEST_API_VERSION || stripe.default?.LATEST_API_VERSION || ''check types''\\)\")",
+      "Bash(node -e \"const v = require\\(''./node_modules/stripe/cjs/apiVersion.js''\\); console.log\\(v\\)\")",
+      "Bash(grep -v \"^\\\\s*//\")"
+    ]
+  }
+}

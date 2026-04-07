@@ -1,0 +1,17 @@
+
+> davinci-note@0.1.0 dev
+> next dev
+
+▲ Next.js 16.2.1 (Turbopack)
+- Local:         http://localhost:3000
+- Network:       http://192.168.219.103:3000
+- Environments: .env.local
+✓ Ready in 277ms
+
+ GET / 200 in 166ms (next.js: 96ms, application-code: 70ms)
+ POST /api/ai-expand 200 in 19.7s (next.js: 40ms, application-code: 19.6s)
+ GET / 200 in 32ms (next.js: 4ms, application-code: 28ms)
+ GET / 200 in 27ms (next.js: 3ms, application-code: 25ms)
+✓ Compiled in 128ms
+  Reload env: .env.local
+ GET / 200 in 73ms (next.js: 30ms, application-code: 43ms)
